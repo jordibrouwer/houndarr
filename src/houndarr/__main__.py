@@ -1,0 +1,88 @@
+"""Entry point: python -m houndarr."""
+
+import click
+
+from houndarr import __version__
+
+
+@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(__version__, "-V", "--version", prog_name="houndarr")
+@click.option(
+    "--data-dir",
+    default="/data",
+    show_default=True,
+    envvar="HOUNDARR_DATA_DIR",
+    help="Directory for persistent data (SQLite DB and master key).",
+)
+@click.option(
+    "--host",
+    default="0.0.0.0",
+    show_default=True,
+    envvar="HOUNDARR_HOST",
+    help="Host address to bind the web server to.",
+)
+@click.option(
+    "--port",
+    default=8877,
+    show_default=True,
+    envvar="HOUNDARR_PORT",
+    type=int,
+    help="Port to bind the web server to.",
+)
+@click.option(
+    "--dev",
+    is_flag=True,
+    default=False,
+    help="Run in development mode with auto-reload.",
+)
+@click.option(
+    "--log-level",
+    default="info",
+    show_default=True,
+    type=click.Choice(["debug", "info", "warning", "error"], case_sensitive=False),
+    envvar="HOUNDARR_LOG_LEVEL",
+    help="Log level for the web server.",
+)
+def cli(
+    data_dir: str,
+    host: str,
+    port: int,
+    dev: bool,
+    log_level: str,
+) -> None:
+    """Houndarr — search for missing media in Sonarr and Radarr, politely.
+
+    A focused self-hosted companion that automatically triggers searches for
+    missing and cutoff-unmet media in controlled batches, keeping your
+    indexers happy.
+    """
+    import uvicorn
+
+    from houndarr.config import AppSettings
+
+    settings = AppSettings(
+        data_dir=data_dir,
+        host=host,
+        port=port,
+        dev=dev,
+        log_level=log_level.lower(),
+    )
+
+    # Store settings so the app factory can pick them up
+    import houndarr.config as _cfg
+
+    _cfg._runtime_settings = settings  # noqa: SLF001
+
+    uvicorn.run(
+        "houndarr.app:create_app",
+        factory=True,
+        host=host,
+        port=port,
+        reload=dev,
+        log_level=log_level.lower(),
+        access_log=dev,
+    )
+
+
+if __name__ == "__main__":
+    cli()

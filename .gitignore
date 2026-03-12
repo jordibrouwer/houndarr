@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# Testing
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.cover
+*.py,cover
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Linting
+.ruff_cache/
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Distribution / packaging
+*.manifest
+*.spec
+
+# Data directory (runtime state — never commit)
+data/
+*.db
+*.masterkey
+
+# Logs
+logs/
+*.log
+
+# Secrets
+.env.local
+.env.*.local
+secrets/
+
+# Docker
+.docker/
+
+# Node (for CDN fallback cache etc. — should not exist but just in case)
+node_modules/
+
+# Research artifacts
+.opencode/
