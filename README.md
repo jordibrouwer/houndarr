@@ -80,6 +80,26 @@ docker compose up -d
 Open `http://<your-host>:8877` in your browser. On first launch you will be
 prompted to create an admin username and password.
 
+<details>
+<summary>Prefer <code>docker run</code>?</summary>
+
+```bash
+docker run -d \
+  --name houndarr \
+  --restart unless-stopped \
+  -p 8877:8877 \
+  -v /path/to/data:/data \
+  -e TZ=America/New_York \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  ghcr.io/av1155/houndarr:latest
+```
+
+Replace `/path/to/data` with an absolute path on your host where Houndarr
+should store its database and master key.
+
+</details>
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -94,6 +114,12 @@ prompted to create an admin username and password.
 | `PUID` | `1000` | User ID for file ownership inside the container |
 | `PGID` | `1000` | Group ID for file ownership inside the container |
 | `TZ` | `UTC` | Container timezone (e.g. `America/New_York`) |
+
+> **Note — LXC / Proxmox / root-based hosts:** If your Docker host runs containers
+> as root (a common setup in Proxmox LXC containers), set `PUID=0` and `PGID=0`.
+> Houndarr will skip the privilege-drop and run directly as root, matching the
+> security posture of the rest of your stack. A warning will be printed to stdout
+> at startup as a reminder.
 
 ## Reverse Proxy
 
