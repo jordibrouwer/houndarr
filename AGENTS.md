@@ -53,7 +53,7 @@ Run **all five** before every commit. CI enforces the same checks.
 ## Running Tests
 
 ```bash
-# Full suite (303 tests, async — count includes parametrised expansions)
+# Full suite (401 tests, async — count includes parametrised expansions)
 .venv/bin/pytest
 
 # Single file
@@ -110,7 +110,7 @@ identical check names so branch protection is satisfied.
 | `release.yml` | `v*` tag push | Validates VERSION == tag, extracts CHANGELOG block, creates GitHub Release |
 | `dockerfile-lint.yml` | Changes to `Dockerfile` | `hadolint Dockerfile` |
 | `workflow-lint.yml` | Changes to `.github/workflows/**` | `actionlint` via reviewdog |
-| `api-snapshot-refresh.yml` | Weekly (Monday 10:00 UTC) + manual | Fetches upstream Sonarr/Radarr OpenAPI specs, updates `docs/api/` snapshots and `tests/test_docs_api.py` hashes, opens a PR if changed |
+| `api-snapshot-refresh.yml` | Weekly (Monday 10:00 UTC) + manual | Fetches upstream Sonarr/Radarr/Whisparr/Lidarr/Readarr OpenAPI specs, updates `docs/api/` snapshots and `tests/test_docs_api.py` hashes, opens a PR if changed |
 
 ### Branch protection on `main`
 
@@ -209,6 +209,7 @@ No alternative logging libraries (structlog, loguru) are used.
 | `BLE001` | Broad exception in background loops (always with logging) |
 | `SLF001` | Test fixtures accessing private module state for reset |
 | `PLW0603` | Module-level global reassignment (singletons) — note: the `PLW` rule family is not currently selected in ruff config, so these comments are defensive/inert |
+| `S101` | Defensive assert for non-None `series_id` in Sonarr adapter (1 location) |
 
 ---
 
@@ -229,8 +230,13 @@ src/houndarr/
     sonarr.py          # SonarrClient (episode/season search)
     radarr.py          # RadarrClient (movie search)
   engine/
-    search_loop.py     # run_instance_search() — one search pass
+    candidates.py      # SearchCandidate dataclass, ItemType, date helpers
+    search_loop.py     # run_instance_search() — unified search pipeline
     supervisor.py      # Supervisor — one asyncio.Task per enabled instance
+    adapters/
+      __init__.py      # AppAdapter dataclass, ADAPTERS registry, get_adapter()
+      sonarr.py        # Sonarr adapter: candidate conversion + dispatch
+      radarr.py        # Radarr adapter: candidate conversion + dispatch
   routes/
     pages.py           # Dashboard, Logs, Settings page routes
     settings.py        # Settings CRUD (instance add/edit/delete/toggle)
@@ -303,20 +309,27 @@ Full DDL is in `src/houndarr/database.py`. Migrations are incremental
 (`_migrate_to_v2` through `_migrate_to_v4`); bump `SCHEMA_VERSION` when
 adding new ones.
 
-### Sonarr / Radarr API reference (local)
+### *arr API reference (local)
 
 Full upstream OpenAPI specs are vendored locally and kept current:
 
 - `docs/api/sonarr_openapi.json` — Sonarr v3 API (OpenAPI 3.0.1)
 - `docs/api/radarr_openapi.json` — Radarr v3 API (OpenAPI 3.0.4)
+- `docs/api/whisparr_openapi.json` — Whisparr v3 API (OpenAPI 3.0.1)
+- `docs/api/lidarr_openapi.json` — Lidarr v1 API (OpenAPI 3.0.4)
+- `docs/api/readarr_openapi.json` — Readarr v1 API (OpenAPI 3.0.1)
 
-**Use these as the source of truth** when modifying `clients/sonarr.py` or
-`clients/radarr.py`. They document every endpoint, parameter, request body,
-and response schema. See `docs/api-context.md` for usage guidelines.
+**Use these as the source of truth** when modifying or creating *arr client
+code. They document every endpoint, parameter, request body, and response
+schema. See `docs/api-context.md` for usage guidelines.
 
-**Freshness:** `api-snapshot-refresh.yml` auto-fetches upstream specs weekly
-(Monday 10:00 UTC) and opens a PR if changed — local specs are never more
-than one week stale.
+Sonarr and Radarr specs are actively used by `clients/sonarr.py` and
+`clients/radarr.py`. The Whisparr, Lidarr, and Readarr specs are vendored
+as reference material for future client development.
+
+**Freshness:** `api-snapshot-refresh.yml` auto-fetches all five upstream
+specs weekly (Monday 10:00 UTC) and opens a PR if changed — local specs
+are never more than one week stale.
 
 ---
 
@@ -345,7 +358,8 @@ independently. Tests that need a database AND the app must request both
 
 Tests touching `cooldowns` or `search_log` must seed the `instances` table
 first via the `seeded_instances` fixture (defined locally in
-`tests/test_engine/test_search_loop.py` and `tests/test_services/test_cooldown.py`):
+`tests/test_engine/test_search_loop.py`, `tests/test_engine/test_golden_search_log.py`,
+`tests/test_engine/test_supervisor.py`, and `tests/test_services/test_cooldown.py`):
 
 ```python
 @pytest_asyncio.fixture()
