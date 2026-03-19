@@ -140,6 +140,38 @@ async def _count_searches_last_hour(instance_id: int, search_kind: SearchKind) -
     return int(row[0]) if row else 0
 
 
+async def _latest_missing_reason(
+    instance_id: int,
+    item_id: int,
+    item_type: str,
+) -> str | None:
+    """Return the latest logged missing-pass reason for one item, if any."""
+    async with get_db() as db:
+        async with db.execute(
+            """
+            SELECT reason
+            FROM search_log
+            WHERE instance_id = ?
+              AND item_id = ?
+              AND item_type = ?
+              AND search_kind = 'missing'
+            ORDER BY timestamp DESC, id DESC
+            LIMIT 1
+            """,
+            (instance_id, item_id, item_type),
+        ) as cur:
+            row = await cur.fetchone()
+
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def _is_release_timing_reason(reason: str | None) -> bool:
+    """Return ``True`` when *reason* indicates a release-timing block."""
+    return reason == "not yet released" or (
+        reason is not None and reason.startswith("post-release grace")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Unified search pass
 # ---------------------------------------------------------------------------
@@ -225,16 +257,13 @@ async def _run_search_pass(  # noqa: C901
 
             candidate = adapt_fn(item, instance)
 
-            # Group-key dedup (season-context mode).
-            if candidate.group_key is not None:
-                if candidate.group_key in seen_group_keys:
+            # Item-level modes can dedup immediately. Context modes defer dedup
+            # until after release-timing checks so a temporarily blocked record
+            # does not hide a later eligible record from the same group.
+            if candidate.group_key is None:
+                if candidate.item_id in seen_item_ids:
                     continue
-                seen_group_keys.add(candidate.group_key)
-
-            # Item-id dedup across pages.
-            if candidate.item_id in seen_item_ids:
-                continue
-            seen_item_ids.add(candidate.item_id)
+                seen_item_ids.add(candidate.item_id)
 
             # Unreleased / post-release grace checks.
             # Pre-release gate is unconditional; post-release grace is
@@ -254,6 +283,18 @@ async def _run_search_pass(  # noqa: C901
                         reason=candidate.unreleased_reason,
                     )
                     continue
+
+            # Context-mode dedup happens after release-timing checks so a later
+            # eligible record in the same season/artist/author can still drive
+            # the group search when an earlier record was temporarily blocked.
+            if candidate.group_key is not None:
+                if candidate.group_key in seen_group_keys:
+                    continue
+                seen_group_keys.add(candidate.group_key)
+
+                if candidate.item_id in seen_item_ids:
+                    continue
+                seen_item_ids.add(candidate.item_id)
 
             # Hourly cap.
             if hourly_cap > 0 and searches_this_hour >= hourly_cap:
@@ -281,6 +322,64 @@ async def _run_search_pass(  # noqa: C901
             if await is_on_cooldown(
                 instance.id, candidate.item_id, candidate.item_type, cooldown_days
             ):
+                if search_kind == "missing":
+                    latest_reason = await _latest_missing_reason(
+                        instance.id, candidate.item_id, candidate.item_type
+                    )
+                    if _is_release_timing_reason(latest_reason):
+                        logger.info(
+                            "[%s] allowing missing retry for %s after release-timing block",
+                            instance.name,
+                            candidate.item_id,
+                        )
+                        scanned += 1
+                        try:
+                            async with adapter.make_client(instance) as dispatch_client:
+                                await dispatch_fn(dispatch_client, candidate)
+                        except Exception as exc:  # noqa: BLE001
+                            msg = str(exc)
+                            logger.warning(
+                                "[%s] %ssearch failed for %s: %s",
+                                instance.name,
+                                log_prefix,
+                                candidate.item_id,
+                                msg,
+                            )
+                            await _write_log(
+                                instance.id,
+                                candidate.item_id,
+                                candidate.item_type,
+                                "error",
+                                search_kind=search_kind,
+                                cycle_id=cycle_id,
+                                cycle_trigger=cycle_trigger,
+                                item_label=candidate.label,
+                                message=msg,
+                            )
+                            continue
+
+                        await record_search(instance.id, candidate.item_id, candidate.item_type)
+                        await _write_log(
+                            instance.id,
+                            candidate.item_id,
+                            candidate.item_type,
+                            "searched",
+                            search_kind=search_kind,
+                            cycle_id=cycle_id,
+                            cycle_trigger=cycle_trigger,
+                            item_label=candidate.label,
+                        )
+                        searched += 1
+                        searches_this_hour += 1
+                        logger.info(
+                            "[%s] %ssearched %s %s",
+                            instance.name,
+                            log_prefix,
+                            candidate.item_type,
+                            candidate.item_id,
+                        )
+                        continue
+
                 reason = (
                     f"on cutoff cooldown ({cooldown_days}d)"
                     if is_cutoff
