@@ -431,6 +431,8 @@ Conventional Commits format: `type(scope): description`
 Allowed types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`,
 `ci`, `chore`, `revert`.
 
+Subject line max 50 characters (including the `type(scope): ` prefix); body lines max 72 characters.
+
 ### Pull requests
 
 - **Squash-merge only.** Linear history is enforced by branch protection.
