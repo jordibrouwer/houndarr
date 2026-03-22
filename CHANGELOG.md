@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2026-03-22
+
+### Fixed
+
+- Instance URLs now accept underscores in hostnames alongside hyphens and dots (e.g. `http://radarr_hd:7878`); underscore-named containers were previously rejected as invalid (#285).
+- Whisparr records with no series linkage, which previously caused repeated search errors labeled `Unknown Series - S00` in the logs, are now skipped instead of producing a failed search entry (#286).
+
+---
+
 ## [1.6.1] - 2026-03-21
 
 ### Changed
