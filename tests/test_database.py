@@ -29,7 +29,7 @@ async def test_schema_created(db: None) -> None:
 async def test_schema_version_set(db: None) -> None:
     """Schema version should be set after init."""
     version = await get_setting("schema_version")
-    assert version == "9"
+    assert version == "10"
 
 
 @pytest.mark.asyncio()
@@ -110,7 +110,7 @@ async def test_init_db_migrates_v1_schema_to_v3(tmp_path: Path) -> None:
         search_log_columns = {row[1] async for row in search_log_cur}
         instance_columns = {row[1] async for row in instances_cur}
 
-    assert await get_setting("schema_version") == "9"
+    assert await get_setting("schema_version") == "10"
     assert "item_label" in search_log_columns
     assert "search_kind" in search_log_columns
     assert "cycle_id" in search_log_columns
@@ -179,7 +179,7 @@ async def test_init_db_migrates_v2_schema_to_v4(tmp_path: Path) -> None:
         async with conn.execute("PRAGMA table_info(search_log)") as cur:
             search_log_columns = {row[1] async for row in cur}
 
-    assert await get_setting("schema_version") == "9"
+    assert await get_setting("schema_version") == "10"
     assert "cycle_id" in search_log_columns
     assert "cycle_trigger" in search_log_columns
 
@@ -246,7 +246,7 @@ async def test_init_db_migrates_v3_schema_to_v4(tmp_path: Path) -> None:
     set_db_path(str(db_path))
     await init_db()
 
-    assert await get_setting("schema_version") == "9"
+    assert await get_setting("schema_version") == "10"
     async with get_db() as conn:
         async with conn.execute("PRAGMA table_info(instances)") as cur:
             instance_columns = {row[1] async for row in cur}
@@ -329,7 +329,7 @@ async def test_init_db_migrates_v4_schema_to_v6(tmp_path: Path) -> None:
     set_db_path(str(db_path))
     await init_db()
 
-    assert await get_setting("schema_version") == "9"
+    assert await get_setting("schema_version") == "10"
 
     async with get_db() as conn:
         # Verify new columns exist
@@ -463,7 +463,7 @@ async def test_init_db_migrates_v5_schema_to_v6(tmp_path: Path) -> None:
     set_db_path(str(db_path))
     await init_db()
 
-    assert await get_setting("schema_version") == "9"
+    assert await get_setting("schema_version") == "10"
 
     async with get_db() as conn:
         async with conn.execute("PRAGMA table_info(instances)") as cur:
@@ -560,7 +560,7 @@ async def test_init_db_migrates_v6_schema_to_v7(tmp_path: Path) -> None:
     set_db_path(str(db_path))
     await init_db()
 
-    assert await get_setting("schema_version") == "9"
+    assert await get_setting("schema_version") == "10"
 
     async with get_db() as conn:
         async with conn.execute("PRAGMA table_info(instances)") as cur:
@@ -575,24 +575,26 @@ async def test_init_db_migrates_v6_schema_to_v7(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio()
-async def test_init_db_self_heals_v9_columns_when_version_already_current(
+async def test_init_db_self_heals_v9_and_v10_when_version_already_current(
     tmp_path: Path,
 ) -> None:
-    """init_db should add missing v9 columns even when schema_version is already 9.
+    """init_db should add missing v9 columns and expand v10 CHECK constraints.
 
-    Regression test for a scenario where the version was bumped to 9 but the
+    Regression test for a scenario where the version was bumped but the
     ALTER TABLE statements did not persist (e.g. interrupted WAL checkpoint
-    or hot-reload race during development).
+    or hot-reload race during development).  Also verifies the v10 self-heal:
+    ``whisparr`` rows become ``whisparr_v2``, and ``whisparr_v3`` /
+    ``whisparr_v3_movie`` are accepted by the updated CHECK constraints.
     """
     db_path = tmp_path / "corrupted-v9.db"
 
-    # Build a schema-8-shaped table but stamp version as 9 to simulate
+    # Build a schema-8-shaped table but stamp version as current to simulate
     # the corrupted state.
     async with aiosqlite.connect(str(db_path)) as conn:
         await conn.executescript(
             """
             CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            INSERT INTO settings (key, value) VALUES ('schema_version', '9');
+            INSERT INTO settings (key, value) VALUES ('schema_version', '10');
 
             CREATE TABLE instances (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -631,6 +633,10 @@ async def test_init_db_self_heals_v9_columns_when_version_already_current(
                 updated_at TEXT NOT NULL DEFAULT '2024-01-01T00:00:00.000Z'
             );
 
+            -- Seed a row with the old 'whisparr' type to verify v10 rename.
+            INSERT INTO instances (name, type, url)
+            VALUES ('Old Whisparr', 'whisparr', 'http://whisparr:6969');
+
             CREATE TABLE cooldowns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 instance_id INTEGER NOT NULL
@@ -667,13 +673,34 @@ async def test_init_db_self_heals_v9_columns_when_version_already_current(
     set_db_path(str(db_path))
     await init_db()
 
-    assert await get_setting("schema_version") == "9"
+    assert await get_setting("schema_version") == "10"
 
     async with get_db() as conn:
         async with conn.execute("PRAGMA table_info(instances)") as cur:
             instance_columns = {row[1] async for row in cur}
         assert "missing_page_offset" in instance_columns
         assert "cutoff_page_offset" in instance_columns
+
+        # v10 self-heal: old 'whisparr' row should be renamed to 'whisparr_v2'.
+        async with conn.execute("SELECT type FROM instances WHERE name = 'Old Whisparr'") as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        assert row[0] == "whisparr_v2"
+
+        # v10 self-heal: new 'whisparr_v3' type accepted by CHECK constraint.
+        await conn.execute(
+            "INSERT INTO instances (name, type, url)"
+            " VALUES ('v10 guard', 'whisparr_v3', 'http://test')"
+        )
+
+        # v10 self-heal: 'whisparr_v3_movie' accepted in cooldowns CHECK.
+        v3_id_row = await conn.execute("SELECT id FROM instances WHERE name = 'v10 guard'")
+        v3_id = (await v3_id_row.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO cooldowns (instance_id, item_id, item_type, searched_at)"
+            " VALUES (?, 1, 'whisparr_v3_movie', '2024-01-01T00:00:00Z')",
+            (v3_id,),
+        )
 
 
 @pytest.mark.asyncio()
