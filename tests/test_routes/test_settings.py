@@ -676,3 +676,84 @@ def test_update_rejects_malformed_time_window(app: TestClient) -> None:
     # The stored value must still be the original.
     edit_resp = app.get("/settings/instances/1/edit")
     assert b'value="09:00-18:00"' in edit_resp.content
+
+
+# ---------------------------------------------------------------------------
+# search_order (#394)
+# ---------------------------------------------------------------------------
+
+
+def _option_selected(content: bytes, value: str) -> bool:
+    """Return True when `<option value="{value}" ... selected ...>` appears in *content*.
+
+    Matches `selected` strictly inside the opening tag of the target option so
+    that "option exists" and "something else is selected" cannot both be true
+    simultaneously and pass the assertion.
+    """
+    import re
+
+    pattern = rb'<option\s+value="' + re.escape(value).encode("ascii") + rb'"[^>]*\sselected\b'
+    return re.search(pattern, content) is not None
+
+
+def test_add_form_preselects_random_by_default(app: TestClient) -> None:
+    """A fresh Add Instance form pre-selects Random.
+
+    Regression guard for the case where ``_blank_instance()`` or the Instance
+    dataclass default silently falls back to chronological.  A real browser
+    submits the selected option's ``value``; if this renders chronological,
+    new instances get chronological persisted without user interaction.
+    """
+    _login(app)
+    resp = app.get("/settings/instances/add-form")
+    assert resp.status_code == 200
+    assert b'name="search_order"' in resp.content
+    assert _option_selected(resp.content, "random"), resp.content
+    assert not _option_selected(resp.content, "chronological")
+
+
+def test_create_instance_accepts_random_search_order(app: TestClient) -> None:
+    _login(app)
+    form = {**_VALID_FORM, "search_order": "random"}
+    resp = app.post("/settings/instances", data=form, headers=csrf_headers(app))
+    assert resp.status_code == 200
+    edit = app.get("/settings/instances/1/edit")
+    assert b'name="search_order"' in edit.content
+    assert _option_selected(edit.content, "random"), edit.content
+
+
+def test_create_instance_defaults_to_random(app: TestClient) -> None:
+    _login(app)
+    resp = app.post("/settings/instances", data=_VALID_FORM, headers=csrf_headers(app))
+    assert resp.status_code == 200
+    edit = app.get("/settings/instances/1/edit")
+    assert _option_selected(edit.content, "random"), edit.content
+
+
+def test_create_instance_rejects_invalid_search_order(app: TestClient) -> None:
+    _login(app)
+    form = {**_VALID_FORM, "search_order": "backwards"}
+    resp = app.post("/settings/instances", data=form, headers=csrf_headers(app))
+    assert resp.status_code == 422
+    assert b"Invalid search order" in resp.content
+
+
+def test_update_instance_toggles_search_order(app: TestClient) -> None:
+    _login(app)
+    app.post("/settings/instances", data=_VALID_FORM, headers=csrf_headers(app))
+
+    update_form = {**_VALID_FORM, "search_order": "random"}
+    resp = app.post("/settings/instances/1", data=update_form, headers=csrf_headers(app))
+    assert resp.status_code == 200
+
+    edit = app.get("/settings/instances/1/edit")
+    assert _option_selected(edit.content, "random")
+
+    revert = app.post(
+        "/settings/instances/1",
+        data={**_VALID_FORM, "search_order": "chronological"},
+        headers=csrf_headers(app),
+    )
+    assert revert.status_code == 200
+    edit_after = app.get("/settings/instances/1/edit")
+    assert _option_selected(edit_after.content, "chronological")
