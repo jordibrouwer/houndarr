@@ -6,8 +6,9 @@ description: All environment variables supported by Houndarr.
 
 # Environment Variables
 
-Houndarr is configured primarily through environment variables set in your
-`docker-compose.yml` or `docker run` command.
+Every environment variable Houndarr reads, grouped by area. Set
+them in your `docker-compose.yml`, `docker run` flags, Kubernetes
+manifests, or the Unraid CA template.
 
 ## Application settings
 
@@ -59,7 +60,7 @@ container. If migrating from the default mode, `chown -R` all files in the
 data directory (including `houndarr.db-wal` and `houndarr.db-shm`) to the
 new UID/GID.
 
-See [Trust & Security](/docs/security/trust-and-security#explicit-non-root-mode)
+See [Security Overview](/docs/security/overview#explicit-non-root-mode)
 for details.
 
 ### Development mode
@@ -80,7 +81,7 @@ Set `HOUNDARR_SECURE_COOKIES=true` when running behind a reverse proxy with
 HTTPS termination. Without this, session cookies and login credentials are
 transmitted in cleartext on the network.
 
-See [Reverse Proxy](reverse-proxy.md) for the full configuration.
+See [Reverse Proxy](/docs/guides/reverse-proxy) for the full configuration.
 
 ### Cookie SameSite policy
 
@@ -99,5 +100,5 @@ regardless of this setting.
 `HOUNDARR_AUTH_MODE=proxy` delegates authentication to an SSO reverse proxy
 (Authelia, Authentik, oauth2-proxy, etc.). Requires both
 `HOUNDARR_AUTH_PROXY_HEADER` and `HOUNDARR_TRUSTED_PROXIES`; the app refuses
-to start without them. See [SSO proxy authentication](reverse-proxy.md#sso-proxy-authentication)
+to start without them. See [SSO Proxy Auth](/docs/guides/sso-proxy-auth)
 for setup instructions and examples.

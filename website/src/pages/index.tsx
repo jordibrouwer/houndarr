@@ -15,34 +15,34 @@ type ScreenshotItem = {
 };
 
 const DASHBOARD_SCREENSHOT: ScreenshotItem = {
-  src: require('@site/static/img/screenshots/Dashboard_Houndarr.jpeg').default,
+  src: require('@site/static/img/screenshots/houndarr-dashboard.png').default,
   alt: 'Houndarr Dashboard: instance cards with search metrics and activity',
   caption: 'Dashboard: live search metrics, instance status, and on-demand triggers',
 };
 
 const SUPPORTING_SCREENSHOTS: ScreenshotItem[] = [
   {
-    src: require('@site/static/img/screenshots/Logs_Houndarr.jpeg').default,
+    src: require('@site/static/img/screenshots/houndarr-logs.png').default,
     alt: 'Houndarr Logs: filterable search activity log',
     caption: 'Logs',
   },
   {
-    src: require('@site/static/img/screenshots/Settings_Houndarr.jpeg').default,
+    src: require('@site/static/img/screenshots/houndarr-settings-instances.png').default,
     alt: 'Houndarr Settings: instance list with enable toggles',
     caption: 'Settings',
   },
   {
-    src: require('@site/static/img/screenshots/Settings_Houndarr_Add_Instance_Settings.jpeg').default,
+    src: require('@site/static/img/screenshots/houndarr-add-instance-form.png').default,
     alt: 'Houndarr Add Instance: search, cutoff, and upgrade configuration',
     caption: 'Instance config',
   },
   {
-    src: require('@site/static/img/screenshots/Settings_Account_Houndarr.jpeg').default,
+    src: require('@site/static/img/screenshots/houndarr-settings-account.png').default,
     alt: 'Houndarr Account settings: password and session management',
     caption: 'Account',
   },
   {
-    src: require('@site/static/img/screenshots/Settings_Help_Houndarr.jpeg').default,
+    src: require('@site/static/img/screenshots/houndarr-settings-help.png').default,
     alt: 'Houndarr Help: in-app settings reference',
     caption: 'Help',
   },
@@ -126,7 +126,7 @@ function HomepageHeader() {
           <div className={styles.heroCta}>
             <Link
               className="button button--primary button--lg"
-              to="/docs/getting-started/quick-start">
+              to="/docs/guides/installation/docker-compose">
               Get Started →
             </Link>
             <Link

@@ -24,24 +24,25 @@ After creating your account, log in with your new credentials.
 
 Go to **Settings** and click **Add Instance** to connect your *arr instances.
 
-![Settings page](../../static/img/screenshots/Settings_Houndarr.jpeg)
+![The Houndarr Settings page showing a two-row Instances table with active Radarr and Sonarr rows, each with Disable / Edit / Delete actions](../../static/img/screenshots/houndarr-settings-instances.png)
 
 For each instance you need:
 
 - **Name**: a friendly label (e.g., "Radarr Movies", "Sonarr 4K", "Lidarr Music")
 - **Type**: Radarr, Sonarr, Lidarr, Readarr, Whisparr v2, or Whisparr v3
-- **URL**: the base URL of the instance (e.g., `http://sonarr:8989`). For Docker Compose, this must be the *arr's internal container port, not the host port you published. See [Troubleshooting](/docs/concepts/troubleshooting) if the connection test fails.
+- **URL**: the base URL of the instance (e.g., `http://sonarr:8989`). For Docker Compose, this must be the *arr's internal container port, not the host port you published. See [Troubleshoot Connection](/docs/guides/troubleshoot-connection) if the connection test fails.
 - **API Key**: found in your *arr instance under Settings > General
 
 :::tip
 API keys are encrypted at rest using Fernet symmetric encryption and are never
-sent back to the browser. See [Trust & Security](/docs/security/trust-and-security)
+sent back to the browser. See [Credential Handling](/docs/security/credential-handling)
 for details.
 :::
 
 ## 4. Configure search settings
 
-Each instance has its own search settings. The defaults are conservative and safe:
+Each instance has its own search settings. The defaults are tuned
+to stay well under typical indexer limits:
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
@@ -52,9 +53,9 @@ Each instance has its own search settings. The defaults are conservative and saf
 | Post-Release Grace (hrs) | 6 | Hours to wait after release date before searching |
 | Queue Limit | 0 (disabled) | Skip cycle when download queue meets or exceeds this count |
 
-For detailed explanations of all settings, see [Instance Settings](/docs/configuration/instance-settings).
+For detailed explanations of all settings, see [Instance Settings](/docs/reference/instance-settings).
 
-![Add instance settings](../../static/img/screenshots/Settings_Houndarr_Add_Instance_Settings.jpeg)
+![The Houndarr Add Instance modal with Connection fields (Name, Type, URL, API Key) and Search Policy fields (Batch Size, Sleep, Hourly Cap, Cooldown, Post-Release Grace, Queue Limit)](../../static/img/screenshots/houndarr-add-instance-form.png)
 
 ## 5. Enable the instance
 
@@ -69,4 +70,4 @@ Once instances are enabled, the Dashboard shows:
 - **Run Now** buttons for on-demand search triggers
 - **Recent activity** from the search log
 
-![Dashboard](../../static/img/screenshots/Dashboard_Houndarr.jpeg)
+![The Houndarr Dashboard with top-level searched / skipped / error counts and per-instance cards showing live metrics and Run Now buttons](../../static/img/screenshots/houndarr-dashboard.png)

@@ -4,24 +4,49 @@ const sidebars: SidebarsConfig = {
   docsSidebar: [
     {
       type: 'category',
-      label: 'Getting Started',
+      label: 'Tutorial',
       collapsed: false,
       items: [
-        'getting-started/quick-start',
-        'getting-started/installation',
-        'getting-started/kubernetes',
-        'getting-started/helm',
-        'getting-started/first-run-setup',
+        'tutorial/your-first-cycle',
       ],
     },
     {
       type: 'category',
-      label: 'Configuration',
+      label: 'Install',
       collapsed: false,
       items: [
-        'configuration/environment-variables',
-        'configuration/instance-settings',
-        'configuration/reverse-proxy',
+        'guides/installation/docker-compose',
+        'guides/installation/docker',
+        'guides/installation/unraid',
+        'guides/installation/kubernetes',
+        'guides/installation/helm',
+        'guides/installation/from-source',
+        'guides/first-run-setup',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Guides',
+      collapsed: false,
+      items: [
+        'guides/verify-its-working',
+        'guides/troubleshoot-connection',
+        'guides/increase-throughput',
+        'guides/backup-and-restore',
+        'guides/reverse-proxy',
+        'guides/sso-proxy-auth',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      collapsed: false,
+      items: [
+        'reference/environment-variables',
+        'reference/instance-settings',
+        'reference/search-commands',
+        'reference/skip-reasons',
+        'reference/compatibility',
       ],
     },
     {
@@ -29,10 +54,8 @@ const sidebars: SidebarsConfig = {
       label: 'Concepts',
       collapsed: false,
       items: [
-        'concepts/how-houndarr-works',
-        'concepts/troubleshooting',
-        'concepts/faq',
-        'concepts/test-coverage',
+        'concepts/how-scheduling-works',
+        'concepts/search-order',
       ],
     },
     {
@@ -40,9 +63,13 @@ const sidebars: SidebarsConfig = {
       label: 'Security',
       collapsed: false,
       items: [
-        'security/trust-and-security',
+        'security/overview',
+        'security/credential-handling',
+        'security/threat-model',
+        'security/audit',
       ],
     },
+    'faq',
   ],
 };
 

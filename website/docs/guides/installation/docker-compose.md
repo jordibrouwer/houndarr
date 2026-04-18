@@ -49,11 +49,13 @@ prompted to create an admin username and password.
 3. Add your *arr instances (URL + API key).
 4. Enable each instance. Houndarr begins searching on the configured schedule.
 
-For more details, see [First-Run Setup](first-run-setup.md).
+For more details, see [First-Run Setup](/docs/guides/first-run-setup).
 
-:::tip Good to know
-Houndarr does not search your entire library at once. It works through missing and cutoff-unmet items in small batches. An optional upgrade pass can also re-search items that already meet cutoff. See [How Houndarr Works](/docs/concepts/how-houndarr-works) for details.
-:::
+Houndarr does not search your entire library at once. It works
+through `wanted/missing` and `wanted/cutoff` in small batches, plus
+an optional upgrade pass over items that already meet cutoff. See
+[How Houndarr Works](/docs/concepts/how-scheduling-works) for the
+full funnel.
 
 ## Using `docker run`
 
@@ -111,6 +113,6 @@ Most users (especially on Docker Compose, Unraid, or Proxmox) should use
 the default mode with `PUID`/`PGID`. The non-root mode is primarily useful
 for Kubernetes with `runAsNonRoot: true` or hardened environments that
 disallow root-starting containers. See
-[Trust & Security](/docs/security/trust-and-security#explicit-non-root-mode)
+[Security Overview](/docs/security/overview#explicit-non-root-mode)
 for details.
 :::
