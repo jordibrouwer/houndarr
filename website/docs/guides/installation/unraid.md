@@ -4,6 +4,8 @@ title: Unraid
 description: Install Houndarr on Unraid via the Community Applications store, walking every template field.
 ---
 
+import Image from '@theme/IdealImage';
+
 # Install on Unraid
 
 Since 2026-03-30, Houndarr has lived in the Unraid Community
@@ -24,7 +26,15 @@ install path. You do not need to write Docker Compose by hand.
 2. Search for **Houndarr**.
 3. Click the Houndarr tile to see its details.
 
-![Houndarr in the Unraid Community Applications store, showing the Overview text, Categories row, Template / Support / Registry / Project links, and container repository details including first-seen date](../../../static/img/screenshots/unraid-community-apps-houndarr.png)
+<figure className="docs-screenshot-portrait">
+  <Image
+    img={require('@site/static/img/screenshots/unraid-community-apps-houndarr.png')}
+    alt="Houndarr in the Unraid Community Applications store, showing the Overview text, Categories row, Template / Support / Registry / Project links, and container repository details including first-seen date"
+  />
+  <figcaption>
+    The CA detail popup you see after clicking the Houndarr tile. Click <strong>Install</strong> to open the template editor.
+  </figcaption>
+</figure>
 
 4. Click **Install**. The template editor opens with nine fields;
    they are covered below.
@@ -52,7 +62,7 @@ holds two files:
 - `houndarr.masterkey`: the Fernet key that decrypts your stored *arr
   API keys
 
-:::warning Back up this directory
+:::warning[Back up this directory]
 
 Lose `houndarr.masterkey` and every stored *arr API key becomes
 unrecoverable. You will have to re-enter each key by hand. Back up

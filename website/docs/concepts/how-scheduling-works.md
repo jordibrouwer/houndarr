@@ -4,6 +4,8 @@ title: How Houndarr Works
 description: What Houndarr does, how it decides what to search, and why most items get skipped each cycle.
 ---
 
+import Image from '@theme/IdealImage';
+
 # How Houndarr Works
 
 Houndarr is a search scheduler for Radarr, Sonarr, Lidarr, Readarr, and Whisparr (v2 and v3). It triggers search commands in small, rate-limited batches so you don't have to hit "Search All Missing" and overwhelm your indexers.
@@ -15,19 +17,17 @@ search and **how many** items per batch.
 
 ## The search cycle
 
-```
-1. Houndarr asks your *arr instance: "What items are missing or cutoff-unmet?"
-   (and optionally: "What items already meet cutoff but could be upgraded?")
-       ↓
-2. The instance responds with its wanted list
-   (only monitored items that are missing, below quality cutoff, or upgrade-eligible)
-       ↓
-3. Houndarr applies its scheduling rules to each candidate
-   (cooldown, hourly cap, post-release grace, batch size)
-       ↓
-4. Eligible items → search command sent to the instance
-       ↓
-5. Ineligible items → logged as "skipped", retried next cycle
+```mermaid
+flowchart TD
+    A["1. Ask the *arr instance:<br/>what's missing, cutoff-unmet, or upgrade-eligible?"]
+    B["2. Instance returns its wanted list<br/>monitored items only"]
+    C["3. Apply scheduling rules:<br/>cooldown, hourly cap, post-release grace, batch size"]
+    D["4. Eligible: send search command<br/>to the instance"]
+    E["5. Ineligible: log as skipped,<br/>retry next cycle"]
+    A --> B
+    B --> C
+    C --> D
+    C --> E
 ```
 
 Your *arr instances do all the actual searching. Houndarr controls the pacing.
@@ -49,7 +49,7 @@ Your *arr instance, not Houndarr. It populates the `wanted/cutoff` API list base
 
 If cutoff searches aren't happening, check whether the item actually appears in your instance's own "Wanted > Cutoff Unmet" view first.
 
-:::tip Quality profiles are managed in your *arr instance, not Houndarr
+:::tip[Quality profiles are managed in your *arr instance, not Houndarr]
 Houndarr works best when your *arr instances are already configured with
 quality profiles you trust. It does not manage quality profiles or custom formats.
 
@@ -60,20 +60,15 @@ If you want to build, test, and deploy quality profiles and custom formats acros
 
 Think of it as a funnel:
 
-```
-Your monitored library
-        │
-        │  *arr instance filter: missing, cutoff-unmet, or upgrade-eligible items
-        ▼
-  Wanted list (much smaller)
-        │
-        │  Houndarr filter: cooldown, post-release grace, hourly cap
-        ▼
-  Eligible this cycle (smaller still)
-        │
-        │  Batch size limit
-        ▼
-  Actually searched (often just 1–3 items)
+```mermaid
+flowchart TD
+    A["Your monitored library"]
+    B["Wanted list<br/>(much smaller)"]
+    C["Eligible this cycle<br/>(smaller still)"]
+    D["Actually searched<br/>(often just 1-3 items)"]
+    A -->|"*arr filter:<br/>missing, cutoff-unmet, upgrade-eligible"| B
+    B -->|"Houndarr filter:<br/>cooldown, grace, hourly cap"| C
+    C -->|"Batch size limit"| D
 ```
 
 For example, if you have 500 monitored movies in Radarr but only 50 are cutoff-unmet, and 35 of those are on cooldown, 8 are still in their post-release grace window, and your batch is 1, Houndarr searches 1 movie that cycle. The rest wait for cooldowns to expire or grace windows to pass, and Houndarr works through them over days and weeks. Missing items that were blocked only by release timing can get one early retry once they become eligible.
@@ -108,10 +103,21 @@ A high skip count with zero errors is pacing working as designed: the
 engine examines candidates, finds most ineligible under your rules,
 and waits for the next cycle.
 
-![The Houndarr Logs page showing filter controls, cycle summary stats, and a table of skipped and searched rows](../../static/img/screenshots/houndarr-logs.png)
+<Image
+  img={require('@site/static/img/screenshots/houndarr-logs.png')}
+  alt="The Houndarr Logs page showing filter controls, cycle summary stats, and a table of skipped and searched rows"
+/>
 
 On mobile, log entries are presented as stacked cards; each card corresponds to one cycle group or individual row:
 
-![The Houndarr Logs page on mobile with each entry as a stacked card showing cycle summaries and individual skip or search rows](../../static/img/screenshots/houndarr-logs-mobile.png)
+<figure className="docs-screenshot-portrait">
+  <Image
+    img={require('@site/static/img/screenshots/houndarr-logs-mobile.png')}
+    alt="The Houndarr Logs page on mobile with each entry as a stacked card showing cycle summaries and individual skip or search rows"
+  />
+  <figcaption>
+    The Logs page on a phone-width viewport. Each cycle becomes a stacked card; individual rows sit underneath.
+  </figcaption>
+</figure>
 
 See [FAQ](/docs/faq) for answers to specific questions, and [Verify It's Working](/docs/guides/verify-its-working) to confirm everything is connected and running.
