@@ -947,55 +947,43 @@ async def _column_exists(db: aiosqlite.Connection, table_name: str, column_name:
     return any(row[1] == column_name for row in rows)
 
 
-# ---------------------------------------------------------------------------
-# Settings helpers
-# ---------------------------------------------------------------------------
-
-
 async def get_setting(key: str, default: str | None = None) -> str | None:
-    """Fetch a single setting value by key."""
-    async with get_db() as db:
-        async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
-            row = await cur.fetchone()
-            return str(row["value"]) if row else default
+    """Fetch a single setting value by key.
+
+    Thin delegator over
+    :func:`houndarr.repositories.settings.get_setting`; kept here so
+    callers that still import from :mod:`houndarr.database` keep
+    working while the D batches migrate them one file at a time.  The
+    ``default=`` fallback is preserved because route-layer callers
+    rely on it; the repository contract has no default (see
+    :class:`houndarr.protocols.SettingsRepository`).
+
+    Args:
+        key: Setting key to look up.
+        default: Value to return when *key* has no row (the legacy
+            contract).  Defaults to ``None``.
+
+    Returns:
+        The stored string value, or *default* when the row is absent.
+    """
+    from houndarr.repositories.settings import get_setting as _repo_get_setting
+
+    value = await _repo_get_setting(key)
+    return value if value is not None else default
 
 
 async def set_setting(key: str, value: str) -> None:
-    """Upsert a setting."""
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?)"
-            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        await db.commit()
+    """Upsert a setting.
 
-
-# ---------------------------------------------------------------------------
-# Log retention
-# ---------------------------------------------------------------------------
-
-
-async def purge_old_logs(retention_days: int) -> int:
-    """Delete ``search_log`` rows older than *retention_days* days.
-
-    Called at startup (and optionally on a schedule) to prevent unbounded
-    log growth on long-running instances.
+    Thin delegator over
+    :func:`houndarr.repositories.settings.set_setting`.  Same rationale
+    as :func:`get_setting`: callers still importing from this module
+    see the previous signature; the SQL itself lives in the repository.
 
     Args:
-        retention_days: Rows with a ``timestamp`` older than this many days
-            are deleted.  Pass ``0`` or a negative value to disable purging.
-
-    Returns:
-        Number of rows deleted (0 if retention is disabled or nothing to purge).
+        key: Setting key.
+        value: Raw string value to store.
     """
-    if retention_days <= 0:
-        return 0
+    from houndarr.repositories.settings import set_setting as _repo_set_setting
 
-    async with get_db() as db:
-        cur = await db.execute(
-            "DELETE FROM search_log WHERE timestamp < datetime('now', ? || ' days')",
-            (f"-{retention_days}",),
-        )
-        await db.commit()
-        return cur.rowcount or 0
+    await _repo_set_setting(key, value)
