@@ -14,7 +14,7 @@ import math
 import random
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -24,6 +24,7 @@ from houndarr.database import get_db
 from houndarr.engine.adapters import get_adapter
 from houndarr.engine.adapters.protocols import AppAdapterProto
 from houndarr.engine.candidates import SearchCandidate
+from houndarr.enums import CycleTrigger, SearchAction, SearchKind
 from houndarr.services.cooldown import (
     is_on_cooldown,
     record_search,
@@ -36,9 +37,6 @@ from houndarr.services.time_window import (
 )
 
 logger = logging.getLogger(__name__)
-
-SearchKind = Literal["missing", "cutoff", "upgrade"]
-CycleTrigger = Literal["scheduled", "run_now", "system"]
 
 _MAX_LIST_PAGES_PER_PASS = 5
 _MISSING_PAGE_SIZE_MIN = 10
@@ -75,9 +73,9 @@ async def _write_log(
     item_id: int | None,
     item_type: str | None,
     action: str,
-    search_kind: SearchKind | None = None,
+    search_kind: SearchKind | str | None = None,
     cycle_id: str | None = None,
-    cycle_trigger: CycleTrigger | None = None,
+    cycle_trigger: CycleTrigger | str | None = None,
     item_label: str | None = None,
     reason: str | None = None,
     message: str | None = None,
@@ -142,7 +140,7 @@ def _cutoff_scan_budget(batch_size: int) -> int:
     return _clamp(batch_size * 12, _CUTOFF_SCAN_BUDGET_MIN, _CUTOFF_SCAN_BUDGET_MAX)
 
 
-async def _count_searches_last_hour(instance_id: int, search_kind: SearchKind) -> int:
+async def _count_searches_last_hour(instance_id: int, search_kind: SearchKind | str) -> int:
     """Count successful searches in the last hour for one pass kind."""
     cutoff = datetime.now(UTC) - timedelta(hours=1)
     cutoff_iso = cutoff.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
@@ -208,14 +206,14 @@ async def _run_search_pass(  # noqa: C901
     adapt_fn: Callable[..., SearchCandidate],
     dispatch_fn: Callable[..., Awaitable[None]],
     fetch_fn: Callable[..., Awaitable[list[Any]]],
-    search_kind: SearchKind,
+    search_kind: SearchKind | str,
     batch_size: int,
     hourly_cap: int,
     cooldown_days: int,
     page_size: int,
     scan_budget: int,
     cycle_id: str,
-    cycle_trigger: CycleTrigger,
+    cycle_trigger: CycleTrigger | str,
     start_page: int = 1,
     total_fn: Callable[[], Awaitable[int]] | None = None,
 ) -> tuple[int, int]:
@@ -337,7 +335,7 @@ async def _run_search_pass(  # noqa: C901
                         instance.id,
                         candidate.item_id,
                         candidate.item_type,
-                        "skipped",
+                        SearchAction.skipped.value,
                         search_kind=search_kind,
                         cycle_id=cycle_id,
                         cycle_trigger=cycle_trigger,
@@ -370,7 +368,7 @@ async def _run_search_pass(  # noqa: C901
                     instance.id,
                     candidate.item_id,
                     candidate.item_type,
-                    "skipped",
+                    SearchAction.skipped.value,
                     search_kind=search_kind,
                     cycle_id=cycle_id,
                     cycle_trigger=cycle_trigger,
@@ -411,7 +409,7 @@ async def _run_search_pass(  # noqa: C901
                                 instance.id,
                                 candidate.item_id,
                                 candidate.item_type,
-                                "error",
+                                SearchAction.error.value,
                                 search_kind=search_kind,
                                 cycle_id=cycle_id,
                                 cycle_trigger=cycle_trigger,
@@ -425,7 +423,7 @@ async def _run_search_pass(  # noqa: C901
                             instance.id,
                             candidate.item_id,
                             candidate.item_type,
-                            "searched",
+                            SearchAction.searched.value,
                             search_kind=search_kind,
                             cycle_id=cycle_id,
                             cycle_trigger=cycle_trigger,
@@ -453,7 +451,7 @@ async def _run_search_pass(  # noqa: C901
                     instance.id,
                     candidate.item_id,
                     candidate.item_type,
-                    "skipped",
+                    SearchAction.skipped.value,
                     search_kind=search_kind,
                     cycle_id=cycle_id,
                     cycle_trigger=cycle_trigger,
@@ -482,7 +480,7 @@ async def _run_search_pass(  # noqa: C901
                     instance.id,
                     candidate.item_id,
                     candidate.item_type,
-                    "error",
+                    SearchAction.error.value,
                     search_kind=search_kind,
                     cycle_id=cycle_id,
                     cycle_trigger=cycle_trigger,
@@ -496,7 +494,7 @@ async def _run_search_pass(  # noqa: C901
                 instance.id,
                 candidate.item_id,
                 candidate.item_type,
-                "searched",
+                SearchAction.searched.value,
                 search_kind=search_kind,
                 cycle_id=cycle_id,
                 cycle_trigger=cycle_trigger,
@@ -536,7 +534,7 @@ async def _run_upgrade_pass(
     master_key: bytes,
     *,
     cycle_id: str,
-    cycle_trigger: CycleTrigger,
+    cycle_trigger: CycleTrigger | str,
 ) -> int:
     """Execute the upgrade search pass for *instance*.
 
@@ -573,7 +571,7 @@ async def _run_upgrade_pass(
             instance.id,
             None,
             None,
-            "error",
+            SearchAction.error.value,
             search_kind="upgrade",
             cycle_id=cycle_id,
             cycle_trigger=cycle_trigger,
@@ -604,7 +602,7 @@ async def _run_upgrade_pass(
             instance.id,
             None,
             None,
-            "info",
+            SearchAction.info.value,
             search_kind="upgrade",
             cycle_id=cycle_id,
             cycle_trigger=cycle_trigger,
@@ -668,7 +666,7 @@ async def _run_upgrade_pass(
                 instance.id,
                 candidate.item_id,
                 candidate.item_type,
-                "skipped",
+                SearchAction.skipped.value,
                 search_kind="upgrade",
                 cycle_id=cycle_id,
                 cycle_trigger=cycle_trigger,
@@ -685,7 +683,7 @@ async def _run_upgrade_pass(
                 instance.id,
                 candidate.item_id,
                 candidate.item_type,
-                "skipped",
+                SearchAction.skipped.value,
                 search_kind="upgrade",
                 cycle_id=cycle_id,
                 cycle_trigger=cycle_trigger,
@@ -714,7 +712,7 @@ async def _run_upgrade_pass(
                 instance.id,
                 candidate.item_id,
                 candidate.item_type,
-                "error",
+                SearchAction.error.value,
                 search_kind="upgrade",
                 cycle_id=cycle_id,
                 cycle_trigger=cycle_trigger,
@@ -729,7 +727,7 @@ async def _run_upgrade_pass(
             instance.id,
             candidate.item_id,
             candidate.item_type,
-            "searched",
+            SearchAction.searched.value,
             search_kind="upgrade",
             cycle_id=cycle_id,
             cycle_trigger=cycle_trigger,
@@ -772,7 +770,7 @@ async def run_instance_search(
     master_key: bytes,
     *,
     cycle_id: str | None = None,
-    cycle_trigger: CycleTrigger = "scheduled",
+    cycle_trigger: CycleTrigger | str = CycleTrigger.scheduled,
 ) -> int:
     """Execute one search cycle for *instance*.
 
@@ -832,7 +830,7 @@ async def run_instance_search(
                     instance.id,
                     None,
                     None,
-                    "info",
+                    SearchAction.info.value,
                     cycle_id=cycle_id_value,
                     cycle_trigger=cycle_trigger,
                     reason=reason,
@@ -853,7 +851,7 @@ async def run_instance_search(
                     instance.id,
                     None,
                     None,
-                    "info",
+                    SearchAction.info.value,
                     cycle_id=cycle_id_value,
                     cycle_trigger=cycle_trigger,
                     reason=reason,

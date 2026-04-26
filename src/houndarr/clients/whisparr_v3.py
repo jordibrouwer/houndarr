@@ -32,17 +32,16 @@ each issuing their own ``/api/v3/movie`` request.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 import httpx
 
 from houndarr.clients._wire_models import WhisparrV3LibraryMovie
-from houndarr.clients.base import ArrClient
+from houndarr.clients.base import ArrClient, WantedKind
 
 __all__ = ["LibraryWhisparrV3Movie", "MissingWhisparrV3Movie", "WhisparrV3Client"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MissingWhisparrV3Movie:
     """A missing or cutoff-unmet movie/scene from the Whisparr v3 library."""
 
@@ -58,7 +57,7 @@ class MissingWhisparrV3Movie:
     digital_release: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LibraryWhisparrV3Movie:
     """A movie/scene from Whisparr v3's full library with file and cutoff metadata."""
 
@@ -178,7 +177,7 @@ class WhisparrV3Client(ArrClient):
         start = (page - 1) * page_size
         return cutoff[start : start + page_size]
 
-    async def get_wanted_total(self, kind: Literal["missing", "cutoff"]) -> int:
+    async def get_wanted_total(self, kind: WantedKind) -> int:
         """Return the count of wanted items for *kind* from the cached library.
 
         Overrides the base default

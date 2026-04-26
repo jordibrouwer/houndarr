@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from houndarr.clients._wire_models import (
     ArrSeries,
@@ -11,12 +11,12 @@ from houndarr.clients._wire_models import (
     SonarrLibraryEpisode,
     SonarrWantedEpisode,
 )
-from houndarr.clients.base import ArrClient
+from houndarr.clients.base import ArrClient, WantedKind
 
 __all__ = ["LibraryEpisode", "MissingEpisode", "SonarrClient"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LibraryEpisode:
     """An episode from Sonarr's full library with file and cutoff metadata."""
 
@@ -31,7 +31,7 @@ class LibraryEpisode:
     cutoff_met: bool
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MissingEpisode:
     """A single missing episode returned by Sonarr's wanted/missing endpoint."""
 
@@ -129,7 +129,7 @@ class SonarrClient(ArrClient):
         )
         return [_parse_episode(w) for w in envelope.records]
 
-    async def get_wanted_total(self, kind: Literal["missing", "cutoff"]) -> int:
+    async def get_wanted_total(self, kind: WantedKind) -> int:
         """Return the totalRecords count for ``wanted/{kind}`` via a size-1 probe.
 
         Delegates to :meth:`ArrClient._fetch_wanted_total`, which wraps

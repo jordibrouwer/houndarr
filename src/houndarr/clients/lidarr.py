@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from houndarr.clients._wire_models import (
     LidarrLibraryAlbum,
     LidarrWantedAlbum,
     PaginatedResponse,
 )
-from houndarr.clients.base import ArrClient
+from houndarr.clients.base import ArrClient, WantedKind
 
 __all__ = ["LidarrClient", "LibraryAlbum", "MissingAlbum"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LibraryAlbum:
     """An album from Lidarr's full library endpoint."""
 
@@ -28,7 +28,7 @@ class LibraryAlbum:
     release_date: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MissingAlbum:
     """A single missing album returned by Lidarr's wanted/missing endpoint."""
 
@@ -127,7 +127,7 @@ class LidarrClient(ArrClient):
         )
         return [_parse_album(w) for w in envelope.records]
 
-    async def get_wanted_total(self, kind: Literal["missing", "cutoff"]) -> int:
+    async def get_wanted_total(self, kind: WantedKind) -> int:
         """Return the totalRecords count for ``wanted/{kind}`` via a size-1 probe.
 
         Delegates to :meth:`ArrClient._fetch_wanted_total`, which wraps

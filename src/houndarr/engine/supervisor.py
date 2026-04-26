@@ -18,7 +18,8 @@ from uuid import uuid4
 import httpx
 
 from houndarr.engine.retry import ReconnectState, run_with_reconnect
-from houndarr.engine.search_loop import CycleTrigger, _write_log, run_instance_search
+from houndarr.engine.search_loop import _write_log, run_instance_search
+from houndarr.enums import CycleTrigger, SearchAction
 from houndarr.services.instances import Instance, get_instance, list_instances
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ class Supervisor:
             instance_id=None,
             item_id=None,
             item_type=None,
-            action="info",
+            action=SearchAction.info.value,
             cycle_trigger="system",
             message=f"Supervisor started {len(self._tasks)} task(s)",
         )
@@ -253,7 +254,9 @@ class Supervisor:
 
         await self._run_search_cycle(instance, cycle_trigger="run_now")
 
-    async def _run_search_cycle(self, instance: Instance, *, cycle_trigger: CycleTrigger) -> bool:
+    async def _run_search_cycle(
+        self, instance: Instance, *, cycle_trigger: CycleTrigger | str
+    ) -> bool:
         """Run exactly one cycle for *instance* under the per-instance lock.
 
         Returns:
@@ -288,7 +291,7 @@ class Supervisor:
                     instance_id=instance.id,
                     item_id=None,
                     item_type=None,
-                    action="error",
+                    action=SearchAction.error.value,
                     cycle_id=cycle_id,
                     cycle_trigger=cycle_trigger,
                     message=str(exc),

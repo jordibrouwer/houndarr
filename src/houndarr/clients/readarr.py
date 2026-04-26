@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from houndarr.clients._wire_models import (
     PaginatedResponse,
     ReadarrLibraryBook,
     ReadarrWantedBook,
 )
-from houndarr.clients.base import ArrClient
+from houndarr.clients.base import ArrClient, WantedKind
 
 __all__ = ["LibraryBook", "MissingBook", "ReadarrClient"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LibraryBook:
     """A book from Readarr's full library endpoint."""
 
@@ -28,7 +28,7 @@ class LibraryBook:
     release_date: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class MissingBook:
     """A single missing book returned by Readarr's wanted/missing endpoint."""
 
@@ -127,7 +127,7 @@ class ReadarrClient(ArrClient):
         )
         return [_parse_book(w) for w in envelope.records]
 
-    async def get_wanted_total(self, kind: Literal["missing", "cutoff"]) -> int:
+    async def get_wanted_total(self, kind: WantedKind) -> int:
         """Return the totalRecords count for ``wanted/{kind}`` via a size-1 probe.
 
         Delegates to :meth:`ArrClient._fetch_wanted_total`, which wraps

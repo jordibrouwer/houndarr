@@ -13,11 +13,10 @@ searched.  This module provides the four operations the search engine needs:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Literal
 
 from houndarr.database import get_db
-
-ItemType = Literal["episode", "movie", "album", "book", "whisparr_episode", "whisparr_v3_movie"]
+from houndarr.engine.candidates import ItemType
+from houndarr.value_objects import ItemRef
 
 
 def _now_utc() -> datetime:
@@ -32,7 +31,7 @@ def _iso(dt: datetime) -> str:
 async def is_on_cooldown(
     instance_id: int,
     item_id: int,
-    item_type: ItemType,
+    item_type: ItemType | str,
     cooldown_days: int,
 ) -> bool:
     """Return ``True`` if *item_id* was searched within *cooldown_days* days.
@@ -70,7 +69,7 @@ async def is_on_cooldown(
 async def record_search(
     instance_id: int,
     item_id: int,
-    item_type: ItemType,
+    item_type: ItemType | str,
 ) -> None:
     """Upsert a cooldown record for *item_id* with the current UTC timestamp.
 
@@ -119,6 +118,16 @@ async def count_searches_last_hour(instance_id: int) -> int:
         ) as cur:
             row = await cur.fetchone()
     return int(row[0]) if row else 0
+
+
+async def is_on_cooldown_ref(ref: ItemRef, cooldown_days: int) -> bool:
+    """ItemRef-accepting overload of :func:`is_on_cooldown`."""
+    return await is_on_cooldown(ref.instance_id, ref.item_id, ref.item_type, cooldown_days)
+
+
+async def record_search_ref(ref: ItemRef) -> None:
+    """ItemRef-accepting overload of :func:`record_search`."""
+    await record_search(ref.instance_id, ref.item_id, ref.item_type)
 
 
 async def clear_cooldowns(instance_id: int) -> int:
