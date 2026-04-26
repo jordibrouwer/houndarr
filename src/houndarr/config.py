@@ -1,4 +1,39 @@
-"""Application configuration and runtime settings."""
+"""Application configuration and runtime settings.
+
+Houndarr keeps two config surfaces and this module owns one of them.
+
+Ops config lives on :class:`AppSettings` and is resolved from environment
+variables at boot.  The CLI in :mod:`houndarr.__main__` propagates its
+flags into ``HOUNDARR_*`` env vars before :func:`bootstrap_settings` pins
+an :class:`AppSettings`, so uvicorn reload children that re-import the
+module pick up the same values via :func:`get_settings`.  Once pinned,
+every field is fixed for the life of the process: the operator changes
+it by editing ``docker-compose.yml`` (or the systemd unit env) and
+restarting the container.  ``HOUNDARR_AUTH_MODE`` is the canonical
+example.  Switching from ``builtin`` to ``proxy`` rewires the auth
+middleware, which only happens at app construction time;
+``HOUNDARR_DATA_DIR``, ``HOUNDARR_TRUSTED_PROXIES``, and
+``HOUNDARR_SECURE_COOKIES`` behave the same way for the same reason.
+
+User config lives in SQLite and is editable at runtime through the web
+UI without any restart.  The key-value ``settings`` table holds
+singletons read and written through
+:mod:`houndarr.repositories.settings`; canonical examples are the
+authenticated ``username`` and bcrypt ``password_hash`` (changed from
+the admin account UI), the boolean ``update_check_enabled`` flag
+(Settings > Maintenance), and the ``schema_version`` migration cursor.
+The ``instances`` table holds per-instance policy (``batch_size``,
+``sleep_interval_mins``, ``hourly_cap``, ``cooldown_days``, the per-app
+search-mode columns) read through
+:mod:`houndarr.repositories.instances`; the engine picks up new values
+on the next supervisor cycle, so the operator can retune the search rate
+from ``/settings/instances/<id>`` and see it take effect within minutes.
+
+The two surfaces never overlap.  Anything that needs a process boot to
+take effect (network bind, cookie attributes, auth wiring, log level)
+lives here as an :class:`AppSettings` field.  Anything an operator
+should be able to retune without redeploying lives in the database.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +43,7 @@ import os
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypedDict, Unpack
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +168,70 @@ def get_settings() -> AppSettings:
         auth_mode=os.environ.get("HOUNDARR_AUTH_MODE", "builtin").lower(),
         auth_proxy_header=os.environ.get("HOUNDARR_AUTH_PROXY_HEADER", ""),
     )
+
+
+class BootstrapOverrides(TypedDict, total=False):
+    """Optional :class:`AppSettings` field overrides accepted by ``bootstrap_settings``.
+
+    Every key is optional. Supplied keys are forwarded directly to the
+    :class:`AppSettings` constructor; unsupplied keys take whatever default
+    the dataclass declares (the env-var fallback in :func:`get_settings`
+    is only consulted on the no-override branch, never on the explicit
+    override path).
+    """
+
+    data_dir: str
+    host: str
+    port: int
+    dev: bool
+    log_level: str
+    secure_cookies: bool
+    cookie_samesite: SameSitePolicy
+    trusted_proxies: str
+    auth_mode: str
+    auth_proxy_header: str
+
+
+def bootstrap_settings(**overrides: Unpack[BootstrapOverrides]) -> AppSettings:
+    """Resolve, pin, and return the runtime ``AppSettings`` honouring overrides.
+
+    This is the single entry point for installing :class:`AppSettings` into
+    the module-level singleton. CLI boot, scripts, and tests all funnel
+    through it instead of reaching into ``_runtime_settings`` directly,
+    so the pin lifecycle is observable in one place.
+
+    With at least one override supplied, an :class:`AppSettings` is
+    constructed from the kwargs and pinned. Subsequent
+    :func:`get_settings` calls return the same instance until the next
+    ``bootstrap_settings`` call (or process restart). Any prior pin is
+    replaced; any env var for an *unsupplied* key is ignored (the kwarg
+    path matches the pre-refactor ``AppSettings(data_dir=..., **overrides)``
+    shape, where missing fields take the dataclass default rather than the
+    env value).
+
+    With no overrides supplied, any prior pin is cleared and the result of
+    :func:`get_settings` (env-var resolved) is returned *without* pinning.
+    Callers that subsequently change env vars therefore still see those
+    changes through :func:`get_settings`.
+
+    Args:
+        **overrides: Optional :class:`AppSettings` field values.
+
+    Returns:
+        The :class:`AppSettings` now visible to subsequent
+        :func:`get_settings` calls. With overrides this is the freshly
+        pinned instance; without overrides this is an unpinned
+        env-resolved instance.
+    """
+    global _runtime_settings  # noqa: PLW0603
+
+    if not overrides:
+        _runtime_settings = None
+        return get_settings()
+
+    settings = AppSettings(**overrides)
+    _runtime_settings = settings
+    return settings
 
 
 @dataclass
