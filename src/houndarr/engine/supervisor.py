@@ -17,10 +17,17 @@ from uuid import uuid4
 
 import httpx
 
+from houndarr.database import get_db
+from houndarr.engine.adapters import get_adapter
 from houndarr.engine.retry import ReconnectState, run_with_reconnect
 from houndarr.engine.search_loop import _write_log, run_instance_search
 from houndarr.enums import CycleTrigger, SearchAction
-from houndarr.services.instances import Instance, get_instance, list_instances
+from houndarr.services.instances import (
+    Instance,
+    get_instance,
+    list_instances,
+    update_instance_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +35,30 @@ _SHUTDOWN_TIMEOUT = 10  # seconds to wait for tasks to finish on stop()
 _CONNECT_RETRY_SECS = 30  # back-off interval when a connection error occurs
 _STARTUP_GRACE_SECS = 10  # one-time delay before the first cycle fires per instance
 _STARTUP_STAGGER_SECS = 30  # per-instance offset added to startup grace at initial start()
+_SNAPSHOT_REFRESH_INTERVAL_SECS = 600  # 10 minutes, matches the locked plan cadence
+_SNAPSHOT_INITIAL_DELAY_SECS = 20  # first run after startup, gives arr time to come up
+_UNRELEASED_DELTA_LOG_THRESHOLD = 10  # log INFO when |new - prior| exceeds this
 RunNowStatus = Literal["accepted", "not_found", "disabled"]
+
+
+async def _read_prior_unreleased(instance_id: int) -> int | None:
+    """Return the currently-stored ``unreleased_count`` for an instance.
+
+    A targeted SELECT keeps the delta-logging path off the
+    decryption-heavy :func:`get_instance` helper (the only field this
+    needs is one int).  Returns ``None`` when the row is missing so
+    the caller can suppress the delta log on a freshly-deleted
+    instance instead of treating "absent" as "0 -> N jumped".
+    """
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT unreleased_count FROM instances WHERE id = ?",
+            (instance_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    return int(row["unreleased_count"])
 
 
 class Supervisor:
@@ -48,6 +78,14 @@ class Supervisor:
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._manual_runs: dict[int, asyncio.Task[None]] = {}
         self._run_locks: dict[int, asyncio.Lock] = {}
+        # Global snapshot-refresh task handle.  Populated in ``start`` and
+        # cancelled in ``stop``.
+        self._snapshot_task: asyncio.Task[None] | None = None
+        # Fire-and-forget snapshot-prime tasks spawned on ``start_instance_task``.
+        # Tracked so ``stop()`` can cancel anything still mid-flight when the
+        # supervisor tears down (e.g. during a factory reset that wipes the DB
+        # out from under an in-progress snapshot write).
+        self._prime_tasks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -62,6 +100,15 @@ class Supervisor:
             await self.start_instance_task(
                 instance.id, instance=instance, startup_offset=idx * _STARTUP_STAGGER_SECS
             )
+
+        # Snapshot refresh runs even when no search cycles are enabled, so a
+        # disabled instance's last-known snapshot columns still tick (useful
+        # for operators temporarily pausing search without losing the
+        # monitored-total reading).
+        self._snapshot_task = asyncio.create_task(
+            self._snapshot_refresh_loop(),
+            name="snapshot-refresh-loop",
+        )
 
         if not self._tasks:
             logger.warning("Supervisor: no enabled instances configured. Nothing to do.")
@@ -80,6 +127,23 @@ class Supervisor:
         """Cancel all running tasks and wait up to 10 s for clean exit."""
         self._prune_scheduled_tasks()
         self._prune_manual_tasks()
+
+        snapshot = self._snapshot_task
+        if snapshot is not None and not snapshot.done():
+            snapshot.cancel()
+            with suppress(asyncio.CancelledError):
+                await snapshot
+        self._snapshot_task = None
+
+        # Cancel any in-flight snapshot-prime tasks spawned from
+        # ``start_instance_task`` so they don't write to the DB after the
+        # supervisor has torn down (factory reset deletes the DB right after
+        # this call returns).
+        if self._prime_tasks:
+            for prime in list(self._prime_tasks):
+                prime.cancel()
+            await asyncio.gather(*self._prime_tasks, return_exceptions=True)
+            self._prime_tasks.clear()
 
         if not self._tasks and not self._manual_runs:
             return
@@ -133,6 +197,18 @@ class Supervisor:
         )
         task.add_done_callback(partial(self._on_scheduled_task_done, instance_id))
         self._tasks[instance_id] = task
+
+        # Kick off an immediate one-shot snapshot refresh so a freshly-
+        # added or re-enabled instance's dashboard counters (monitored /
+        # unreleased) populate right away instead of sitting at zero for
+        # up to 10 minutes waiting on the scheduled refresh loop.
+        prime = asyncio.create_task(
+            self._refresh_one_snapshot(current),
+            name=f"snapshot-prime-{instance_id}",
+        )
+        self._prime_tasks.add(prime)
+        prime.add_done_callback(self._prime_tasks.discard)
+
         logger.info("Supervisor: started task for instance %r (id=%d)", current.name, current.id)
         return True
 
@@ -297,6 +373,93 @@ class Supervisor:
                     message=str(exc),
                 )
                 return False
+
+    async def _snapshot_refresh_loop(self) -> None:
+        """Background loop: refresh dashboard snapshot columns at 10-min cadence.
+
+        Keeps each enabled instance's ``monitored_total`` and
+        ``unreleased_count`` columns fresh so ``/api/status?v=2`` can
+        serve them without fanning out to arr on every poll.  Failures
+        are non-fatal: an unreachable arr keeps its last-known snapshot
+        and the loop moves on to the next instance.
+        """
+        try:
+            await asyncio.sleep(_SNAPSHOT_INITIAL_DELAY_SECS)
+        except asyncio.CancelledError:
+            raise
+
+        while True:
+            try:
+                await self._refresh_all_snapshots_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("Supervisor: snapshot refresh iteration failed")
+
+            try:
+                await asyncio.sleep(_SNAPSHOT_REFRESH_INTERVAL_SECS)
+            except asyncio.CancelledError:
+                raise
+
+    async def _refresh_one_snapshot(self, instance: Instance) -> None:
+        """Refresh snapshot columns for a single enabled instance.
+
+        Shared between the scheduled refresh loop and the one-shot prime
+        fired on ``start_instance_task`` so a freshly-added instance's
+        dashboard counters land in the next status poll instead of
+        sitting at zero until the 10-minute loop wakes. Skips disabled
+        instances and treats transport errors as soft failures.
+        """
+        if not instance.enabled:
+            return
+        lock = self._run_locks.setdefault(instance.id, asyncio.Lock())
+        async with lock:
+            try:
+                adapter = get_adapter(instance.type)
+                async with adapter.make_client(instance) as client:
+                    snap = await client.get_instance_snapshot()
+                # Surface a one-line INFO when the unreleased count
+                # jumps non-trivially.  The first refresh after a user
+                # upgrade flips every non-Whisparr-v3 instance from 0
+                # to its real count; without this log the transition
+                # is silent.  Threshold is intentionally noisy enough
+                # to ignore +/- 1 churn from a single release going
+                # past midnight.
+                prior_unreleased = await _read_prior_unreleased(instance.id)
+                if (
+                    prior_unreleased is not None
+                    and abs(snap.unreleased_count - prior_unreleased)
+                    > _UNRELEASED_DELTA_LOG_THRESHOLD
+                ):
+                    logger.info(
+                        "Supervisor: %r unreleased jumped %d -> %d",
+                        instance.name,
+                        prior_unreleased,
+                        snap.unreleased_count,
+                    )
+                await update_instance_snapshot(
+                    instance.id,
+                    monitored_total=snap.monitored_total,
+                    unreleased_count=snap.unreleased_count,
+                )
+            except httpx.TransportError:
+                logger.debug(
+                    "Supervisor: snapshot refresh skipped for %r; instance unreachable",
+                    instance.name,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Supervisor: snapshot refresh failed for %r", instance.name)
+
+    async def _refresh_all_snapshots_once(self) -> None:
+        """Refresh the snapshot columns for every enabled instance once.
+
+        Runs sequentially; acquires the per-instance search lock before
+        writing so it cannot race an in-progress cycle.  Disabled
+        instances are skipped (their last-known snapshot stays on disk).
+        """
+        instances = await list_instances(master_key=self._master_key)
+        for inst in instances:
+            await self._refresh_one_snapshot(inst)
 
     def _on_scheduled_task_done(self, instance_id: int, task: asyncio.Task[None]) -> None:
         """Remove finished scheduled task references."""
