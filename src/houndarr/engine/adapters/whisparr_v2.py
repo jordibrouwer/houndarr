@@ -20,6 +20,11 @@ from houndarr.clients.whisparr_v2 import (
     MissingWhisparrEpisode,
     WhisparrClient,
 )
+from houndarr.engine.adapters._common import (
+    ContextOverride,
+    build_cutoff_candidate,
+    build_missing_candidate,
+)
 from houndarr.engine.candidates import SearchCandidate
 from houndarr.services.instances import Instance, WhisparrSearchMode
 
@@ -93,29 +98,6 @@ def adapt_missing(item: MissingWhisparrEpisode, instance: Instance) -> SearchCan
     Returns:
         A fully populated :class:`SearchCandidate`.
     """
-    episode_mode = instance.whisparr_search_mode == WhisparrSearchMode.episode
-
-    use_season_context = not episode_mode and item.series_id is not None and item.season_number > 0
-
-    if use_season_context:
-        assert item.series_id is not None  # noqa: S101
-        item_id = _season_item_id(item.series_id, item.season_number)
-        label = _season_context_label(item)
-        group_key: tuple[int, int] | None = (item.series_id, item.season_number)
-        search_payload = {
-            "command": "SeasonSearch",
-            "series_id": item.series_id,
-            "season_number": item.season_number,
-        }
-    else:
-        item_id = item.episode_id
-        label = _episode_label(item)
-        group_key = None
-        search_payload = {
-            "command": "EpisodeSearch",
-            "episode_id": item.episode_id,
-        }
-
     unreleased_reason = _whisparr_unreleased_reason(
         item.release_date, instance.post_release_grace_hrs
     )
@@ -128,13 +110,33 @@ def adapt_missing(item: MissingWhisparrEpisode, instance: Instance) -> SearchCan
     if item.series_id is None and unreleased_reason is None:
         unreleased_reason = "no series linked"
 
-    return SearchCandidate(
-        item_id=item_id,
+    context: ContextOverride | None = None
+    if (
+        instance.whisparr_search_mode != WhisparrSearchMode.episode
+        and item.series_id is not None
+        and item.season_number > 0
+    ):
+        context = ContextOverride(
+            item_id=_season_item_id(item.series_id, item.season_number),
+            label=_season_context_label(item),
+            group_key=(item.series_id, item.season_number),
+            search_payload={
+                "command": "SeasonSearch",
+                "series_id": item.series_id,
+                "season_number": item.season_number,
+            },
+        )
+
+    return build_missing_candidate(
         item_type="whisparr_episode",
-        label=label,
+        item_id=item.episode_id,
+        label=_episode_label(item),
         unreleased_reason=unreleased_reason,
-        group_key=group_key,
-        search_payload=search_payload,
+        search_payload={
+            "command": "EpisodeSearch",
+            "episode_id": item.episode_id,
+        },
+        context=context,
     )
 
 
@@ -158,12 +160,11 @@ def adapt_cutoff(item: MissingWhisparrEpisode, instance: Instance) -> SearchCand
     if item.series_id is None and unreleased_reason is None:
         unreleased_reason = "no series linked"
 
-    return SearchCandidate(
-        item_id=item.episode_id,
+    return build_cutoff_candidate(
         item_type="whisparr_episode",
+        item_id=item.episode_id,
         label=_episode_label(item),
         unreleased_reason=unreleased_reason,
-        group_key=None,
         search_payload={
             "command": "EpisodeSearch",
             "episode_id": item.episode_id,
@@ -314,3 +315,21 @@ def make_client(instance: Instance) -> WhisparrClient:
         A new (unopened) :class:`WhisparrClient`.
     """
     return WhisparrClient(url=instance.url, api_key=instance.api_key)
+
+
+class WhisparrV2Adapter:
+    """Class-form Whisparr v2 adapter for the :data:`ADAPTERS` registry.
+
+    Conforms to :class:`~houndarr.engine.adapters.protocols.AppAdapterProto`
+    structurally via the six staticmethod attributes below; the
+    module-level functions remain importable for direct unit-test use.
+    Track C.10 introduces this class form to replace the prior
+    ``AppAdapter`` dataclass-of-callables registry shape.
+    """
+
+    adapt_missing = staticmethod(adapt_missing)
+    adapt_cutoff = staticmethod(adapt_cutoff)
+    adapt_upgrade = staticmethod(adapt_upgrade)
+    fetch_upgrade_pool = staticmethod(fetch_upgrade_pool)
+    dispatch_search = staticmethod(dispatch_search)
+    make_client = staticmethod(make_client)

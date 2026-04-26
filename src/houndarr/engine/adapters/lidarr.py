@@ -10,6 +10,11 @@ from __future__ import annotations
 import logging
 
 from houndarr.clients.lidarr import LibraryAlbum, LidarrClient, MissingAlbum
+from houndarr.engine.adapters._common import (
+    ContextOverride,
+    build_cutoff_candidate,
+    build_missing_candidate,
+)
 from houndarr.engine.candidates import (
     SearchCandidate,
     _is_unreleased,
@@ -73,38 +78,32 @@ def adapt_missing(item: MissingAlbum, instance: Instance) -> SearchCandidate:
     Returns:
         A fully populated :class:`SearchCandidate`.
     """
-    album_mode = instance.lidarr_search_mode == LidarrSearchMode.album
-
-    use_artist_context = not album_mode and item.artist_id > 0
-
-    if use_artist_context:
-        item_id = _artist_item_id(item.artist_id)
-        label = _artist_context_label(item)
-        group_key: tuple[int, int] | None = (item.artist_id, 0)
-        search_payload = {
-            "command": "ArtistSearch",
-            "artist_id": item.artist_id,
-        }
-    else:
-        item_id = item.album_id
-        label = _album_label(item)
-        group_key = None
-        search_payload = {
-            "command": "AlbumSearch",
-            "album_id": item.album_id,
-        }
-
     unreleased_reason = _lidarr_unreleased_reason(
         item.release_date, instance.post_release_grace_hrs
     )
 
-    return SearchCandidate(
-        item_id=item_id,
+    context: ContextOverride | None = None
+    if instance.lidarr_search_mode != LidarrSearchMode.album and item.artist_id > 0:
+        context = ContextOverride(
+            item_id=_artist_item_id(item.artist_id),
+            label=_artist_context_label(item),
+            group_key=(item.artist_id, 0),
+            search_payload={
+                "command": "ArtistSearch",
+                "artist_id": item.artist_id,
+            },
+        )
+
+    return build_missing_candidate(
         item_type="album",
-        label=label,
+        item_id=item.album_id,
+        label=_album_label(item),
         unreleased_reason=unreleased_reason,
-        group_key=group_key,
-        search_payload=search_payload,
+        search_payload={
+            "command": "AlbumSearch",
+            "album_id": item.album_id,
+        },
+        context=context,
     )
 
 
@@ -120,16 +119,13 @@ def adapt_cutoff(item: MissingAlbum, instance: Instance) -> SearchCandidate:
     Returns:
         A fully populated :class:`SearchCandidate`.
     """
-    unreleased_reason = _lidarr_unreleased_reason(
-        item.release_date, instance.post_release_grace_hrs
-    )
-
-    return SearchCandidate(
-        item_id=item.album_id,
+    return build_cutoff_candidate(
         item_type="album",
+        item_id=item.album_id,
         label=_album_label(item),
-        unreleased_reason=unreleased_reason,
-        group_key=None,
+        unreleased_reason=_lidarr_unreleased_reason(
+            item.release_date, instance.post_release_grace_hrs
+        ),
         search_payload={
             "command": "AlbumSearch",
             "album_id": item.album_id,
@@ -260,3 +256,21 @@ def make_client(instance: Instance) -> LidarrClient:
         A new (unopened) :class:`LidarrClient`.
     """
     return LidarrClient(url=instance.url, api_key=instance.api_key)
+
+
+class LidarrAdapter:
+    """Class-form Lidarr adapter for the :data:`ADAPTERS` registry.
+
+    Conforms to :class:`~houndarr.engine.adapters.protocols.AppAdapterProto`
+    structurally via the six staticmethod attributes below; the
+    module-level functions remain importable for direct unit-test use.
+    Track C.10 introduces this class form to replace the prior
+    ``AppAdapter`` dataclass-of-callables registry shape.
+    """
+
+    adapt_missing = staticmethod(adapt_missing)
+    adapt_cutoff = staticmethod(adapt_cutoff)
+    adapt_upgrade = staticmethod(adapt_upgrade)
+    fetch_upgrade_pool = staticmethod(fetch_upgrade_pool)
+    dispatch_search = staticmethod(dispatch_search)
+    make_client = staticmethod(make_client)

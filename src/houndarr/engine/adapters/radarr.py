@@ -10,6 +10,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from houndarr.clients.radarr import LibraryMovie, MissingMovie, RadarrClient
+from houndarr.engine.adapters._common import (
+    build_missing_candidate,
+    fetch_movie_upgrade_pool,
+)
 from houndarr.engine.candidates import (
     SearchCandidate,
     _is_unreleased,
@@ -78,12 +82,11 @@ def adapt_missing(item: MissingMovie, instance: Instance) -> SearchCandidate:
     Returns:
         A fully populated :class:`SearchCandidate`.
     """
-    return SearchCandidate(
-        item_id=item.movie_id,
+    return build_missing_candidate(
         item_type="movie",
+        item_id=item.movie_id,
         label=_movie_label(item),
         unreleased_reason=_radarr_unreleased_reason(item, instance.post_release_grace_hrs),
-        group_key=None,
         search_payload={
             "command": "MoviesSearch",
             "movie_id": item.movie_id,
@@ -142,7 +145,7 @@ def adapt_upgrade(item: LibraryMovie, instance: Instance) -> SearchCandidate:
 
 async def fetch_upgrade_pool(
     client: RadarrClient,
-    instance: Instance,
+    instance: Instance,  # noqa: ARG001
 ) -> list[LibraryMovie]:
     """Fetch and filter Radarr library for upgrade-eligible movies.
 
@@ -150,13 +153,15 @@ async def fetch_upgrade_pool(
 
     Args:
         client: An open :class:`RadarrClient` context.
-        instance: The configured Radarr instance.
+        instance: The configured Radarr instance.  Unused at present;
+            kept for AppAdapter signature parity with the series /
+            album / book adapters whose pool builders consult instance
+            policy.
 
     Returns:
         List of upgrade-eligible :class:`LibraryMovie` items.
     """
-    library = await client.get_library()
-    return [m for m in library if m.monitored and m.has_file and m.cutoff_met]
+    return await fetch_movie_upgrade_pool(client.get_library)
 
 
 async def dispatch_search(client: RadarrClient, candidate: SearchCandidate) -> None:
@@ -179,3 +184,21 @@ def make_client(instance: Instance) -> RadarrClient:
         A new (unopened) :class:`RadarrClient`.
     """
     return RadarrClient(url=instance.url, api_key=instance.api_key)
+
+
+class RadarrAdapter:
+    """Class-form Radarr adapter for the :data:`ADAPTERS` registry.
+
+    Conforms to :class:`~houndarr.engine.adapters.protocols.AppAdapterProto`
+    structurally via the six staticmethod attributes below; the
+    module-level functions remain importable for direct unit-test use.
+    Track C.10 introduces this class form to replace the prior
+    ``AppAdapter`` dataclass-of-callables registry shape.
+    """
+
+    adapt_missing = staticmethod(adapt_missing)
+    adapt_cutoff = staticmethod(adapt_cutoff)
+    adapt_upgrade = staticmethod(adapt_upgrade)
+    fetch_upgrade_pool = staticmethod(fetch_upgrade_pool)
+    dispatch_search = staticmethod(dispatch_search)
+    make_client = staticmethod(make_client)

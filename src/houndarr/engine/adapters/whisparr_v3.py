@@ -18,6 +18,10 @@ from houndarr.clients.whisparr_v3 import (
     MissingWhisparrV3Movie,
     WhisparrV3Client,
 )
+from houndarr.engine.adapters._common import (
+    build_missing_candidate,
+    fetch_movie_upgrade_pool,
+)
 from houndarr.engine.candidates import (
     SearchCandidate,
     _is_unreleased,
@@ -86,12 +90,11 @@ def adapt_missing(item: MissingWhisparrV3Movie, instance: Instance) -> SearchCan
     Returns:
         A fully populated :class:`SearchCandidate`.
     """
-    return SearchCandidate(
-        item_id=item.movie_id,
+    return build_missing_candidate(
         item_type="whisparr_v3_movie",
+        item_id=item.movie_id,
         label=_movie_label(item),
         unreleased_reason=_unreleased_reason(item, instance.post_release_grace_hrs),
-        group_key=None,
         search_payload={
             "command": "MoviesSearch",
             "movie_id": item.movie_id,
@@ -147,7 +150,7 @@ def adapt_upgrade(item: LibraryWhisparrV3Movie, instance: Instance) -> SearchCan
 
 async def fetch_upgrade_pool(
     client: WhisparrV3Client,
-    instance: Instance,
+    instance: Instance,  # noqa: ARG001
 ) -> list[LibraryWhisparrV3Movie]:
     """Fetch and filter the Whisparr v3 library for upgrade-eligible movies/scenes.
 
@@ -155,13 +158,15 @@ async def fetch_upgrade_pool(
 
     Args:
         client: An open :class:`WhisparrV3Client` context.
-        instance: The configured Whisparr v3 instance.
+        instance: The configured Whisparr v3 instance.  Unused at
+            present; kept for AppAdapter signature parity with the
+            series / album / book adapters whose pool builders consult
+            instance policy.
 
     Returns:
         List of upgrade-eligible :class:`LibraryWhisparrV3Movie` items.
     """
-    library = await client.get_library()
-    return [m for m in library if m.monitored and m.has_file and m.cutoff_met]
+    return await fetch_movie_upgrade_pool(client.get_library)
 
 
 async def dispatch_search(client: WhisparrV3Client, candidate: SearchCandidate) -> None:
@@ -184,3 +189,21 @@ def make_client(instance: Instance) -> WhisparrV3Client:
         A new (unopened) :class:`WhisparrV3Client`.
     """
     return WhisparrV3Client(url=instance.url, api_key=instance.api_key)
+
+
+class WhisparrV3Adapter:
+    """Class-form Whisparr v3 adapter for the :data:`ADAPTERS` registry.
+
+    Conforms to :class:`~houndarr.engine.adapters.protocols.AppAdapterProto`
+    structurally via the six staticmethod attributes below; the
+    module-level functions remain importable for direct unit-test use.
+    Track C.10 introduces this class form to replace the prior
+    ``AppAdapter`` dataclass-of-callables registry shape.
+    """
+
+    adapt_missing = staticmethod(adapt_missing)
+    adapt_cutoff = staticmethod(adapt_cutoff)
+    adapt_upgrade = staticmethod(adapt_upgrade)
+    fetch_upgrade_pool = staticmethod(fetch_upgrade_pool)
+    dispatch_search = staticmethod(dispatch_search)
+    make_client = staticmethod(make_client)

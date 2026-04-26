@@ -10,6 +10,11 @@ from __future__ import annotations
 import logging
 
 from houndarr.clients.readarr import LibraryBook, MissingBook, ReadarrClient
+from houndarr.engine.adapters._common import (
+    ContextOverride,
+    build_cutoff_candidate,
+    build_missing_candidate,
+)
 from houndarr.engine.candidates import (
     SearchCandidate,
     _is_unreleased,
@@ -72,38 +77,32 @@ def adapt_missing(item: MissingBook, instance: Instance) -> SearchCandidate:
     Returns:
         A fully populated :class:`SearchCandidate`.
     """
-    book_mode = instance.readarr_search_mode == ReadarrSearchMode.book
-
-    use_author_context = not book_mode and item.author_id > 0
-
-    if use_author_context:
-        item_id = _author_item_id(item.author_id)
-        label = _author_context_label(item)
-        group_key: tuple[int, int] | None = (item.author_id, 0)
-        search_payload = {
-            "command": "AuthorSearch",
-            "author_id": item.author_id,
-        }
-    else:
-        item_id = item.book_id
-        label = _book_label(item)
-        group_key = None
-        search_payload = {
-            "command": "BookSearch",
-            "book_id": item.book_id,
-        }
-
     unreleased_reason = _readarr_unreleased_reason(
         item.release_date, instance.post_release_grace_hrs
     )
 
-    return SearchCandidate(
-        item_id=item_id,
+    context: ContextOverride | None = None
+    if instance.readarr_search_mode != ReadarrSearchMode.book and item.author_id > 0:
+        context = ContextOverride(
+            item_id=_author_item_id(item.author_id),
+            label=_author_context_label(item),
+            group_key=(item.author_id, 0),
+            search_payload={
+                "command": "AuthorSearch",
+                "author_id": item.author_id,
+            },
+        )
+
+    return build_missing_candidate(
         item_type="book",
-        label=label,
+        item_id=item.book_id,
+        label=_book_label(item),
         unreleased_reason=unreleased_reason,
-        group_key=group_key,
-        search_payload=search_payload,
+        search_payload={
+            "command": "BookSearch",
+            "book_id": item.book_id,
+        },
+        context=context,
     )
 
 
@@ -119,16 +118,13 @@ def adapt_cutoff(item: MissingBook, instance: Instance) -> SearchCandidate:
     Returns:
         A fully populated :class:`SearchCandidate`.
     """
-    unreleased_reason = _readarr_unreleased_reason(
-        item.release_date, instance.post_release_grace_hrs
-    )
-
-    return SearchCandidate(
-        item_id=item.book_id,
+    return build_cutoff_candidate(
         item_type="book",
+        item_id=item.book_id,
         label=_book_label(item),
-        unreleased_reason=unreleased_reason,
-        group_key=None,
+        unreleased_reason=_readarr_unreleased_reason(
+            item.release_date, instance.post_release_grace_hrs
+        ),
         search_payload={
             "command": "BookSearch",
             "book_id": item.book_id,
@@ -259,3 +255,21 @@ def make_client(instance: Instance) -> ReadarrClient:
         A new (unopened) :class:`ReadarrClient`.
     """
     return ReadarrClient(url=instance.url, api_key=instance.api_key)
+
+
+class ReadarrAdapter:
+    """Class-form Readarr adapter for the :data:`ADAPTERS` registry.
+
+    Conforms to :class:`~houndarr.engine.adapters.protocols.AppAdapterProto`
+    structurally via the six staticmethod attributes below; the
+    module-level functions remain importable for direct unit-test use.
+    Track C.10 introduces this class form to replace the prior
+    ``AppAdapter`` dataclass-of-callables registry shape.
+    """
+
+    adapt_missing = staticmethod(adapt_missing)
+    adapt_cutoff = staticmethod(adapt_cutoff)
+    adapt_upgrade = staticmethod(adapt_upgrade)
+    fetch_upgrade_pool = staticmethod(fetch_upgrade_pool)
+    dispatch_search = staticmethod(dispatch_search)
+    make_client = staticmethod(make_client)
