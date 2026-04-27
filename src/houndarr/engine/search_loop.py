@@ -13,6 +13,7 @@ import logging
 import math
 import random
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -24,10 +25,18 @@ from houndarr.database import get_db
 from houndarr.engine.adapters import get_adapter
 from houndarr.engine.adapters.protocols import AppAdapterProto
 from houndarr.engine.candidates import SearchCandidate
-from houndarr.enums import CycleTrigger, SearchAction, SearchKind
+from houndarr.enums import CycleTrigger, ItemType, SearchAction, SearchKind
+from houndarr.errors import (
+    ClientError,
+    EngineDispatchError,
+    EngineError,
+    EngineOffsetPersistError,
+    EnginePoolFetchError,
+)
 from houndarr.services.cooldown import (
-    is_on_cooldown,
-    record_search,
+    is_on_cooldown_ref,
+    record_search_ref,
+    should_log_skip,
 )
 from houndarr.services.instances import Instance, InstanceType, SearchOrder, update_instance
 from houndarr.services.time_window import (
@@ -35,6 +44,7 @@ from houndarr.services.time_window import (
     is_within_window,
     parse_time_window,
 )
+from houndarr.value_objects import ItemRef
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +74,102 @@ _UPGRADE_MIN_COOLDOWN_DAYS = 7
 
 
 # ---------------------------------------------------------------------------
-# search_log helper
+# Random search order: stratified-shuffle deck
 # ---------------------------------------------------------------------------
+#
+# When ``SearchOrder.random`` is active, ``_run_search_pass`` picks page
+# numbers from a shuffled permutation of ``[1, max_page]`` rather than a
+# fresh ``random.randint`` each cycle plus a forward walk with wrap-once.
+# The deck is held in this module-level cache, keyed by
+# ``(instance_id, search_kind)`` so each (instance, missing/cutoff) pair
+# tracks its own progress through the current round.
+#
+# Two properties this design buys over the old algorithm:
+#
+#   1. Bounded short-term variance.  Every page is visited exactly once
+#      per round (one round == ``max_page`` page-draws). The worst-case
+#      wait for a given page is therefore ``ceil(max_page / K)`` cycles,
+#      where K = ``_MAX_LIST_PAGES_PER_PASS``.  The previous algorithm
+#      could skip a page for arbitrarily many cycles in a row by chance.
+#
+#   2. No wrap-once asymmetry.  The original walk visited
+#      ``{start, start+1, ..., max_page, 1, 2, ...}`` which favoured
+#      pages near the end of the list when start>1 (a 1.25x-1.5x bias
+#      under multi-page-walk conditions; see AGENTS.md "Verifying
+#      Claims About Algorithms").  Pulling from a fresh shuffle has
+#      no positional asymmetry.
+#
+# The deck is rebuilt whenever ``max_page`` changes (the wanted-list
+# grew or shrank since the last cycle) or whenever the previous round
+# is exhausted.  Stale entries for deleted instances stay in the dict
+# but cost only a small list of integers per (instance, kind) pair.
+
+
+@dataclass(slots=True)
+class _RandomDeckState:
+    """Per-(instance, kind) deck of remaining page numbers for random mode."""
+
+    max_page: int
+    remaining: list[int]
+
+
+_random_decks: dict[tuple[int, str], _RandomDeckState] = {}
+
+
+def _draw_next_random_page(instance_id: int, search_kind: SearchKind | str, max_page: int) -> int:
+    """Pop the next page from this (instance, kind)'s shuffled deck.
+
+    Refreshes the deck when it is empty or when ``max_page`` differs from
+    the value the deck was built against (which happens when the user has
+    added or removed wanted items in the *arr instance since the last
+    cycle).
+    """
+    key = (instance_id, str(search_kind))
+    state = _random_decks.get(key)
+    if state is None or state.max_page != max_page or not state.remaining:
+        deck = list(range(1, max_page + 1))
+        random.shuffle(deck)  # noqa: S311  # nosec B311
+        state = _RandomDeckState(max_page=max_page, remaining=deck)
+        _random_decks[key] = state
+    return state.remaining.pop()
+
+
+def _reset_random_deck(instance_id: int, search_kind: SearchKind | str) -> None:
+    """Drop the cached deck for one (instance, kind) pair.
+
+    Test helper.  Production code does not need to call this because the
+    deck self-refreshes on ``max_page`` mismatch and on exhaustion.
+    """
+    _random_decks.pop((instance_id, str(search_kind)), None)
+
+
+# Sentinel used to pad partial last pages out to ``page_size`` in random mode
+# so the within-page selection probability is the same on partial and full
+# pages.  Without this padding, items on a short last page would be drained
+# every visit (``actual_items < page_size`` means each item has higher than
+# ``batch_size / page_size`` per-visit dispatch probability), accumulating a
+# small but persistent over-selection of the last 1-9 items in any backlog
+# whose ``totalRecords`` is not a multiple of ``page_size``.  Identity
+# comparison (``item is _SHUFFLE_PAD``) is the cheap and unambiguous gate.
+_SHUFFLE_PAD: object = object()
+
+
+# ---------------------------------------------------------------------------
+# search_log helpers
+# ---------------------------------------------------------------------------
+
+
+def _format_hourly_limit_reason(kind: SearchKind | str, cap: int) -> str:
+    """Return the skip-reason string for a cap-exhausted pass.
+
+    Centralises the phrasing used at the three hourly-cap gate sites
+    (missing / cutoff / upgrade) so they cannot drift apart.  The
+    parameter shape ``(N/hr)`` reads as "N per hour" to a user, where
+    the older ``(N)`` form read as an error code, a repeat finding
+    in post-Huntarr self-hoster research.
+    """
+    prefix = "" if kind == "missing" else f"{kind} "
+    return f"{prefix}hourly limit reached ({cap}/hr)"
 
 
 async def _write_log(
@@ -102,6 +206,52 @@ async def _write_log(
         search_kind=str(search_kind) if search_kind is not None else None,
         cycle_id=cycle_id,
         cycle_trigger=str(cycle_trigger) if cycle_trigger is not None else None,
+        item_label=item_label,
+        reason=reason,
+        message=message,
+    )
+
+
+async def _write_item_log(
+    ref: ItemRef,
+    action: str,
+    *,
+    search_kind: SearchKind | str | None = None,
+    cycle_id: str | None = None,
+    cycle_trigger: CycleTrigger | str | None = None,
+    item_label: str | None = None,
+    reason: str | None = None,
+    message: str | None = None,
+) -> None:
+    """Write one ``search_log`` row tied to a specific item reference.
+
+    Thin wrapper over :func:`_write_log` that accepts :class:`ItemRef`
+    in place of the three positional ``(instance_id, item_id, item_type)``
+    arguments.  Used by the hot loops in :func:`_run_search_pass` and
+    :func:`_run_upgrade_pass` where every persisted row is tied to an
+    identified candidate.  Cycle-scope info / error rows (queue gate,
+    window gate, upgrade pool fetch failure, upgrade pool empty) have no
+    ``ItemRef`` and continue to call :func:`_write_log` directly with
+    ``None`` for ``item_id`` and ``item_type``.
+
+    Args:
+        ref: The item this log row pertains to.
+        action: One of the :class:`SearchAction` values (as ``str``).
+        search_kind: ``"missing"`` / ``"cutoff"`` / ``"upgrade"``.
+        cycle_id: Shared cycle identifier for all rows in one cycle.
+        cycle_trigger: ``"scheduled"`` / ``"run_now"`` / ``"system"``.
+        item_label: Human-readable label for the item.
+        reason: Structured skip reason for ``skipped`` rows.
+        message: Free-form detail for ``error`` / ``info`` rows.
+    """
+    await _write_log(
+        ref.instance_id,
+        ref.item_id,
+        ref.item_type.value,
+        action,
+        search_kind=search_kind,
+        cycle_id=cycle_id,
+        cycle_trigger=cycle_trigger,
         item_label=item_label,
         reason=reason,
         message=message,
@@ -155,12 +305,15 @@ async def _count_searches_last_hour(instance_id: int, search_kind: SearchKind | 
     return int(row[0]) if row else 0
 
 
-async def _latest_missing_reason(
-    instance_id: int,
-    item_id: int,
-    item_type: str,
-) -> str | None:
-    """Return the latest logged missing-pass reason for one item, if any."""
+async def _latest_missing_reason_ref(ref: ItemRef) -> str | None:
+    """Return the latest logged missing-pass reason for *ref*, if any.
+
+    Used by the release-timing retry branch in :func:`_run_search_pass`
+    to decide whether an item that is currently on cooldown should be
+    retried (because the last logged reason was a pre-release or
+    post-release-grace skip that has since elapsed) or left on
+    cooldown.
+    """
     async with get_db() as db:
         async with db.execute(
             """
@@ -173,7 +326,7 @@ async def _latest_missing_reason(
             ORDER BY timestamp DESC, id DESC
             LIMIT 1
             """,
-            (instance_id, item_id, item_type),
+            (ref.instance_id, ref.item_id, ref.item_type.value),
         ) as cur:
             row = await cur.fetchone()
 
@@ -185,6 +338,125 @@ def _is_release_timing_reason(reason: str | None) -> bool:
     return reason == "not yet released" or (
         reason is not None and reason.startswith("post-release grace")
     )
+
+
+# Typed wrap helpers for adapter calls
+
+
+async def _dispatch_with_typed_wrap(
+    adapter: AppAdapterProto,
+    instance: Instance,
+    dispatch_fn: Callable[..., Awaitable[None]],
+    candidate: SearchCandidate,
+) -> None:
+    """Open a client, call *dispatch_fn*, and surface failures typed.
+
+    Track B.14 introduces this helper so the three dispatch call sites
+    in :func:`_run_search_pass` and :func:`_run_upgrade_pass` can each
+    narrow their ``except Exception`` to :class:`EngineDispatchError`.
+    The helper owns the whole ``adapter.make_client -> dispatch``
+    attempt boundary: client construction (``httpx.InvalidURL``),
+    context-manager entry / exit, and the dispatch call itself all
+    get typed into one surface.
+
+    Already-typed :class:`EngineError` and :class:`ClientError`
+    subclasses propagate unchanged so richer context from the client
+    layer (Track B.11 / B.12) is not flattened.  Track B.16 will
+    move the wrap into the adapter implementations; at that point
+    this helper becomes a thin passthrough.
+
+    The typed error message is ``str(exc)`` verbatim, which keeps the
+    ``search_log.message`` field byte-equal to the pre-refactor
+    ``message=str(exc)`` write and preserves the golden log shape.
+
+    Args:
+        adapter: The :class:`AppAdapterProto` for the instance.
+        instance: Fully-populated instance.
+        dispatch_fn: Adapter dispatch callable; takes ``(client,
+            candidate)`` and sends the search command.
+        candidate: Item to dispatch.
+
+    Raises:
+        EngineDispatchError: Any non-typed ``Exception``; the original
+            is preserved on ``__cause__``.
+    """
+    try:
+        async with adapter.make_client(instance) as client:
+            await dispatch_fn(client, candidate)
+    except (EngineError, ClientError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise EngineDispatchError(str(exc)) from exc
+
+
+async def _persist_offset_with_typed_wrap(
+    instance_id: int,
+    *,
+    master_key: bytes,
+    **offsets: int,
+) -> None:
+    """Call :func:`update_instance` with offset kwargs, typing failures.
+
+    Track B.15 introduces this helper so the four offset-persist call
+    sites (upgrade series offset + upgrade item offset in
+    :func:`_run_upgrade_pass`; missing page offset + cutoff page offset
+    in :func:`_run_instance_search_impl`) can narrow their
+    ``except Exception`` to :class:`EngineOffsetPersistError`.
+
+    These writes are non-fatal by design: callers swallow the typed
+    error and the next cycle retries the persist.  The wrap keeps the
+    log line identical (``"failed to persist ..."``) while giving
+    observability a typed surface to key on.
+
+    Args:
+        instance_id: Primary key of the row being updated.
+        master_key: Fernet key required by :func:`update_instance`.
+        **offsets: Integer columns to update, e.g.
+            ``missing_page_offset=7``.  Non-integer columns are not a
+            valid shape for this helper; callers should use
+            :func:`update_instance` directly for those.
+
+    Raises:
+        EngineOffsetPersistError: Any non-typed ``Exception``; the
+            original is preserved on ``__cause__``.
+    """
+    try:
+        await update_instance(instance_id, master_key=master_key, **offsets)
+    except (EngineError, ClientError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise EngineOffsetPersistError(str(exc)) from exc
+
+
+async def _fetch_pool_with_typed_wrap(
+    adapter: AppAdapterProto,
+    instance: Instance,
+) -> list[Any]:
+    """Open a client, call ``adapter.fetch_upgrade_pool``, surface typed.
+
+    Sibling of :func:`_dispatch_with_typed_wrap` for the upgrade-pool
+    build path.  Owns the ``adapter.make_client -> fetch`` boundary so
+    construction + context entry + pool fetch all land in the same
+    :class:`EnginePoolFetchError` surface.
+
+    Args:
+        adapter: The :class:`AppAdapterProto` for the instance.
+        instance: Fully-populated instance.
+
+    Returns:
+        The raw upgrade-pool list produced by the adapter.
+
+    Raises:
+        EnginePoolFetchError: Any non-typed ``Exception``; the original
+            is preserved on ``__cause__``.
+    """
+    try:
+        async with adapter.make_client(instance) as client:
+            return await adapter.fetch_upgrade_pool(client, instance)
+    except (EngineError, ClientError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise EnginePoolFetchError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +532,8 @@ async def _run_search_pass(  # noqa: C901
     scanned = 0
     page = max(1, start_page)
     wrapped = False
+    random_max_page = 0
+    use_random_deck = False
 
     if instance.search_order == SearchOrder.random and total_fn is not None:
         try:
@@ -274,14 +548,29 @@ async def _run_search_pass(  # noqa: C901
             )
         else:
             if total > 0:
-                max_page = max(1, math.ceil(total / page_size))
-                page = random.randint(1, max_page)  # noqa: S311  # nosec B311
+                random_max_page = max(1, math.ceil(total / page_size))
+                use_random_deck = True
+                page = _draw_next_random_page(instance.core.id, search_kind, random_max_page)
 
     for _ in range(_MAX_LIST_PAGES_PER_PASS):
         if searched >= target or scanned >= scan_budget:
             break
 
         items = await fetch_fn(page=page, page_size=page_size)
+        # Pad partial pages out to page_size with sentinels in random mode so
+        # the per-item probability of being in the first batch_size positions
+        # of the shuffle is exactly batch_size / page_size on every page.  We
+        # only pad when there is more than one page in the wanted-list: with
+        # max_page == 1 the partial page is the entire backlog and there is
+        # no other page to compete with, so padding would only reduce
+        # throughput without affecting fairness.  See the cooldown probe and
+        # the AGENTS.md "Verifying Claims About Algorithms" section for the
+        # bias derivation this guards against.
+        pad_partial = use_random_deck and random_max_page > 1 and items and len(items) < page_size
+        if pad_partial:
+            items = list(items)
+            while len(items) < page_size:
+                items.append(_SHUFFLE_PAD)
         if instance.search_order == SearchOrder.random and items:
             random.shuffle(items)  # noqa: S311  # nosec B311
         logger.debug(
@@ -292,9 +581,17 @@ async def _run_search_pass(  # noqa: C901
             page,
         )
         if not items:
-            # Paged past available data; wrap to page 1 once per pass so
-            # items at the start of the list (which may have come off
-            # cooldown) still get evaluated.
+            # Random mode draws every page from a pre-shuffled deck of
+            # ``[1, max_page]``, so an empty response means the deck is
+            # carrying a stale page number from before the wanted-list
+            # shrank.  Skip to the next deck entry; the deck will refresh
+            # itself when exhausted or when ``max_page`` no longer matches.
+            if use_random_deck:
+                page = _draw_next_random_page(instance.core.id, search_kind, random_max_page)
+                continue
+            # Chronological mode: paged past available data; wrap to page
+            # 1 once per pass so items at the start of the list (which may
+            # have come off cooldown) still get evaluated.
             if start_page > 1 and not wrapped:
                 page = 1
                 wrapped = True
@@ -303,12 +600,37 @@ async def _run_search_pass(  # noqa: C901
 
         stop_pass = False
         page_fully_consumed = True
+        positions_consumed = 0
+        # In random mode each page visit consumes exactly ``batch_size``
+        # shuffled positions: padding sentinels count toward the position
+        # quota but produce no dispatch, so partial pages dispatch fewer
+        # real items per visit, equalising per-item attention across the
+        # backlog.  Hitting the cap is treated as "page work done" so the
+        # outer loop advances to the next deck page instead of re-fetching
+        # this one.  In chronological mode there is no per-page position
+        # cap; the existing ``searched >= target`` gate is the only break.
+        position_cap = batch_size if pad_partial else None
         for item in items:
             if searched >= target or scanned >= scan_budget:
                 page_fully_consumed = False
                 break
+            if position_cap is not None and positions_consumed >= position_cap:
+                break
+            positions_consumed += 1
+
+            if item is _SHUFFLE_PAD:
+                # Sentinel from partial-page padding: no real item to dispatch.
+                # Counts as scanned (consumes scan budget) so the engine still
+                # bounds its outbound work, but contributes zero dispatches.
+                scanned += 1
+                continue
 
             candidate = adapt_fn(item, instance)
+            ref = ItemRef(
+                instance.id,
+                candidate.item_id,
+                ItemType(candidate.item_type),
+            )
 
             # Item-level modes can dedup immediately. Context modes defer dedup
             # until after release-timing checks so a temporarily blocked record
@@ -324,10 +646,8 @@ async def _run_search_pass(  # noqa: C901
             if candidate.unreleased_reason is not None:
                 is_grace = candidate.unreleased_reason.startswith("post-release grace")
                 if not (is_grace and cycle_trigger == "run_now"):
-                    await _write_log(
-                        instance.id,
-                        candidate.item_id,
-                        candidate.item_type,
+                    await _write_item_log(
+                        ref,
                         SearchAction.skipped.value,
                         search_kind=search_kind,
                         cycle_id=cycle_id,
@@ -351,16 +671,12 @@ async def _run_search_pass(  # noqa: C901
 
             # Hourly cap.
             if hourly_cap > 0 and searches_this_hour >= hourly_cap:
-                reason = (
-                    f"cutoff hourly cap reached ({hourly_cap})"
-                    if is_cutoff
-                    else f"hourly cap reached ({hourly_cap})"
+                reason = _format_hourly_limit_reason(
+                    "cutoff" if is_cutoff else "missing", hourly_cap
                 )
                 logger.info("[%s] %s%s: %s", instance.name, log_prefix, candidate.item_id, reason)
-                await _write_log(
-                    instance.id,
-                    candidate.item_id,
-                    candidate.item_type,
+                await _write_item_log(
+                    ref,
                     SearchAction.skipped.value,
                     search_kind=search_kind,
                     cycle_id=cycle_id,
@@ -372,13 +688,9 @@ async def _run_search_pass(  # noqa: C901
                 break
 
             # Cooldown.
-            if await is_on_cooldown(
-                instance.id, candidate.item_id, candidate.item_type, cooldown_days
-            ):
+            if await is_on_cooldown_ref(ref, cooldown_days):
                 if search_kind == "missing":
-                    latest_reason = await _latest_missing_reason(
-                        instance.id, candidate.item_id, candidate.item_type
-                    )
+                    latest_reason = await _latest_missing_reason_ref(ref)
                     if _is_release_timing_reason(latest_reason):
                         logger.info(
                             "[%s] allowing missing retry for %s after release-timing block",
@@ -387,9 +699,10 @@ async def _run_search_pass(  # noqa: C901
                         )
                         scanned += 1
                         try:
-                            async with adapter.make_client(instance) as dispatch_client:
-                                await dispatch_fn(dispatch_client, candidate)
-                        except Exception as exc:  # noqa: BLE001
+                            await _dispatch_with_typed_wrap(
+                                adapter, instance, dispatch_fn, candidate
+                            )
+                        except EngineDispatchError as exc:
                             msg = str(exc)
                             logger.warning(
                                 "[%s] %ssearch failed for %s: %s",
@@ -398,10 +711,8 @@ async def _run_search_pass(  # noqa: C901
                                 candidate.item_id,
                                 msg,
                             )
-                            await _write_log(
-                                instance.id,
-                                candidate.item_id,
-                                candidate.item_type,
+                            await _write_item_log(
+                                ref,
                                 SearchAction.error.value,
                                 search_kind=search_kind,
                                 cycle_id=cycle_id,
@@ -411,16 +722,9 @@ async def _run_search_pass(  # noqa: C901
                             )
                             continue
 
-                        await record_search(
-                            instance.id,
-                            candidate.item_id,
-                            candidate.item_type,
-                            search_kind,
-                        )
-                        await _write_log(
-                            instance.id,
-                            candidate.item_id,
-                            candidate.item_type,
+                        await record_search_ref(ref, search_kind)
+                        await _write_item_log(
+                            ref,
                             SearchAction.searched.value,
                             search_kind=search_kind,
                             cycle_id=cycle_id,
@@ -444,18 +748,25 @@ async def _run_search_pass(  # noqa: C901
                     if is_cutoff
                     else f"on cooldown ({cooldown_days}d)"
                 )
-                logger.debug("[%s] %s%s: %s", instance.name, log_prefix, candidate.item_id, reason)
-                await _write_log(
-                    instance.id,
-                    candidate.item_id,
-                    candidate.item_type,
-                    SearchAction.skipped.value,
-                    search_kind=search_kind,
-                    cycle_id=cycle_id,
-                    cycle_trigger=cycle_trigger,
-                    item_label=candidate.label,
-                    reason=reason,
-                )
+                bucket = "cutoff_cd" if is_cutoff else "cooldown"
+                skip_key = (instance.id, candidate.item_id, search_kind, bucket)
+                if cycle_trigger == "run_now" or await should_log_skip(skip_key):
+                    logger.debug(
+                        "[%s] %s%s: %s",
+                        instance.name,
+                        log_prefix,
+                        candidate.item_id,
+                        reason,
+                    )
+                    await _write_item_log(
+                        ref,
+                        SearchAction.skipped.value,
+                        search_kind=search_kind,
+                        cycle_id=cycle_id,
+                        cycle_trigger=cycle_trigger,
+                        item_label=candidate.label,
+                        reason=reason,
+                    )
                 continue
 
             # Count only eligible (non-skipped) candidates against scan budget.
@@ -463,9 +774,8 @@ async def _run_search_pass(  # noqa: C901
 
             # Dispatch search via a fresh client context.
             try:
-                async with adapter.make_client(instance) as dispatch_client:
-                    await dispatch_fn(dispatch_client, candidate)
-            except Exception as exc:  # noqa: BLE001
+                await _dispatch_with_typed_wrap(adapter, instance, dispatch_fn, candidate)
+            except EngineDispatchError as exc:
                 msg = str(exc)
                 logger.warning(
                     "[%s] %ssearch failed for %s: %s",
@@ -474,10 +784,8 @@ async def _run_search_pass(  # noqa: C901
                     candidate.item_id,
                     msg,
                 )
-                await _write_log(
-                    instance.id,
-                    candidate.item_id,
-                    candidate.item_type,
+                await _write_item_log(
+                    ref,
                     SearchAction.error.value,
                     search_kind=search_kind,
                     cycle_id=cycle_id,
@@ -487,16 +795,9 @@ async def _run_search_pass(  # noqa: C901
                 )
                 continue
 
-            await record_search(
-                instance.id,
-                candidate.item_id,
-                candidate.item_type,
-                search_kind,
-            )
-            await _write_log(
-                instance.id,
-                candidate.item_id,
-                candidate.item_type,
+            await record_search_ref(ref, search_kind)
+            await _write_item_log(
+                ref,
                 SearchAction.searched.value,
                 search_kind=search_kind,
                 cycle_id=cycle_id,
@@ -521,7 +822,10 @@ async def _run_search_pass(  # noqa: C901
         # consumed.  When the batch fills or scan budget is reached
         # mid-page, the remaining items should be re-evaluated next cycle.
         if page_fully_consumed:
-            page += 1
+            if use_random_deck:
+                page = _draw_next_random_page(instance.core.id, search_kind, random_max_page)
+            else:
+                page += 1
 
     return searched, page
 
@@ -565,9 +869,8 @@ async def _run_upgrade_pass(
 
     # Fetch upgrade-eligible pool via the adapter
     try:
-        async with adapter.make_client(instance) as client:
-            pool = await adapter.fetch_upgrade_pool(client, instance)
-    except Exception as exc:  # noqa: BLE001
+        pool = await _fetch_pool_with_typed_wrap(adapter, instance)
+    except EnginePoolFetchError as exc:
         msg = str(exc)
         logger.warning("[%s] upgrade pool fetch failed: %s", instance.name, msg)
         await _write_log(
@@ -591,26 +894,34 @@ async def _run_upgrade_pass(
     if instance.type in (InstanceType.sonarr, InstanceType.whisparr_v2):
         new_series_offset = instance.upgrade_series_offset + 5
         try:
-            await update_instance(
+            await _persist_offset_with_typed_wrap(
                 instance.id,
                 master_key=master_key,
                 upgrade_series_offset=new_series_offset,
             )
-        except Exception:  # noqa: BLE001
+        except EngineOffsetPersistError:
             logger.warning("[%s] failed to persist upgrade_series_offset", instance.name)
 
     if not pool:
         logger.info("[%s] upgrade pool empty, nothing to upgrade", instance.name)
-        await _write_log(
-            instance.id,
-            None,
-            None,
-            SearchAction.info.value,
-            search_kind="upgrade",
-            cycle_id=cycle_id,
-            cycle_trigger=cycle_trigger,
-            message="upgrade pool empty",
-        )
+        # Suppress identical info rows on every cycle for an instance
+        # that has nothing to upgrade.  One row per 6 hours per
+        # instance keeps the logs feed calm while still proving the
+        # pass ran periodically.  See `services/cooldown.py::
+        # should_log_info` for the LRU + TTL contract.
+        from houndarr.services.cooldown import should_log_info
+
+        if await should_log_info((instance.id, "upgrade_pool_empty"), 6 * 3600):
+            await _write_log(
+                instance.id,
+                None,
+                None,
+                SearchAction.info.value,
+                search_kind="upgrade",
+                cycle_id=cycle_id,
+                cycle_trigger=cycle_trigger,
+                message="nothing to upgrade right now",
+            )
         return 0
 
     # Random mode shuffles the pool and bypasses id-sort + offset-rotation.
@@ -647,6 +958,11 @@ async def _run_upgrade_pass(
             break
 
         candidate = adapter.adapt_upgrade(item, instance)
+        ref = ItemRef(
+            instance.id,
+            candidate.item_id,
+            ItemType(candidate.item_type),
+        )
 
         # Dedup
         if candidate.group_key is None:
@@ -663,12 +979,10 @@ async def _run_upgrade_pass(
 
         # Hourly cap
         if hourly_cap > 0 and searches_this_hour >= hourly_cap:
-            reason = f"upgrade hourly cap reached ({hourly_cap})"
+            reason = _format_hourly_limit_reason("upgrade", hourly_cap)
             logger.info("[%s] upgrade %s: %s", instance.name, candidate.item_id, reason)
-            await _write_log(
-                instance.id,
-                candidate.item_id,
-                candidate.item_type,
+            await _write_item_log(
+                ref,
                 SearchAction.skipped.value,
                 search_kind="upgrade",
                 cycle_id=cycle_id,
@@ -679,20 +993,20 @@ async def _run_upgrade_pass(
             break
 
         # Cooldown
-        if await is_on_cooldown(instance.id, candidate.item_id, candidate.item_type, cooldown_days):
+        if await is_on_cooldown_ref(ref, cooldown_days):
             reason = f"on upgrade cooldown ({cooldown_days}d)"
-            logger.debug("[%s] upgrade %s: %s", instance.name, candidate.item_id, reason)
-            await _write_log(
-                instance.id,
-                candidate.item_id,
-                candidate.item_type,
-                SearchAction.skipped.value,
-                search_kind="upgrade",
-                cycle_id=cycle_id,
-                cycle_trigger=cycle_trigger,
-                item_label=candidate.label,
-                reason=reason,
-            )
+            skip_key = (instance.id, candidate.item_id, "upgrade", "upgrade_cd")
+            if cycle_trigger == "run_now" or await should_log_skip(skip_key):
+                logger.debug("[%s] upgrade %s: %s", instance.name, candidate.item_id, reason)
+                await _write_item_log(
+                    ref,
+                    SearchAction.skipped.value,
+                    search_kind="upgrade",
+                    cycle_id=cycle_id,
+                    cycle_trigger=cycle_trigger,
+                    item_label=candidate.label,
+                    reason=reason,
+                )
             new_offset = (offset + scanned + 1) % len(pool)
             scanned += 1
             continue
@@ -701,9 +1015,8 @@ async def _run_upgrade_pass(
 
         # Dispatch search
         try:
-            async with adapter.make_client(instance) as dispatch_client:
-                await adapter.dispatch_search(dispatch_client, candidate)
-        except Exception as exc:  # noqa: BLE001
+            await _dispatch_with_typed_wrap(adapter, instance, adapter.dispatch_search, candidate)
+        except EngineDispatchError as exc:
             msg = str(exc)
             logger.warning(
                 "[%s] upgrade search failed for %s: %s",
@@ -711,10 +1024,8 @@ async def _run_upgrade_pass(
                 candidate.item_id,
                 msg,
             )
-            await _write_log(
-                instance.id,
-                candidate.item_id,
-                candidate.item_type,
+            await _write_item_log(
+                ref,
                 SearchAction.error.value,
                 search_kind="upgrade",
                 cycle_id=cycle_id,
@@ -725,16 +1036,9 @@ async def _run_upgrade_pass(
             new_offset = (offset + scanned) % len(pool)
             continue
 
-        await record_search(
-            instance.id,
-            candidate.item_id,
-            candidate.item_type,
-            "upgrade",
-        )
-        await _write_log(
-            instance.id,
-            candidate.item_id,
-            candidate.item_type,
+        await record_search_ref(ref, "upgrade")
+        await _write_item_log(
+            ref,
             SearchAction.searched.value,
             search_kind="upgrade",
             cycle_id=cycle_id,
@@ -757,12 +1061,12 @@ async def _run_upgrade_pass(
     # keep the column meaningful and avoid per-cycle row churn.
     if instance.search_order == SearchOrder.chronological:
         try:
-            await update_instance(
+            await _persist_offset_with_typed_wrap(
                 instance.id,
                 master_key=master_key,
                 upgrade_item_offset=new_offset,
             )
-        except Exception:  # noqa: BLE001
+        except EngineOffsetPersistError:
             logger.warning("[%s] failed to persist upgrade_item_offset", instance.name)
 
     return searched
@@ -788,6 +1092,16 @@ async def run_instance_search(
     3. Optionally run the cutoff pass via :func:`_run_search_pass`.
     4. Return the total number of items searched.
 
+    Error surface (Track B.13):
+    Typed Houndarr errors (:class:`~houndarr.errors.EngineError` and
+    :class:`~houndarr.errors.ClientError` subclasses) and
+    :class:`httpx.TransportError` propagate unchanged; the supervisor's
+    reconnect loop inspects ``httpx.TransportError`` specifically, and
+    its typed catch consumes the two Houndarr bases.  Any other
+    exception escaping the internal handlers is wrapped in a fresh
+    :class:`EngineError` with the original on ``__cause__`` so callers
+    only ever see a Houndarr-specific surface.
+
     Args:
         instance: Fully-populated (decrypted) instance.
         master_key: Unused here but kept in signature for symmetry with
@@ -795,6 +1109,34 @@ async def run_instance_search(
 
     Returns:
         Count of items searched in this cycle.
+    """
+    try:
+        return await _run_instance_search_impl(
+            instance,
+            master_key,
+            cycle_id=cycle_id,
+            cycle_trigger=cycle_trigger,
+        )
+    except httpx.TransportError:
+        raise
+    except (EngineError, ClientError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise EngineError(f"unhandled error in search cycle for {instance.name!r}: {exc}") from exc
+
+
+async def _run_instance_search_impl(
+    instance: Instance,
+    master_key: bytes,
+    *,
+    cycle_id: str | None = None,
+    cycle_trigger: CycleTrigger | str = CycleTrigger.scheduled,
+) -> int:
+    """Cycle body; wrapped by :func:`run_instance_search` for typed errors.
+
+    Kept as a private implementation so the public entrypoint can own
+    the error-surface contract without indenting a 200-line try block.
+    Callers outside this module should use :func:`run_instance_search`.
     """
     logger.info(
         "[%s] starting search cycle (batch_size=%d)",
@@ -914,12 +1256,12 @@ async def run_instance_search(
         # Only advance the offset in chronological mode.
         if instance.search_order == SearchOrder.chronological:
             try:
-                await update_instance(
+                await _persist_offset_with_typed_wrap(
                     instance.id,
                     master_key=master_key,
                     missing_page_offset=next_missing_page,
                 )
-            except Exception:  # noqa: BLE001
+            except EngineOffsetPersistError:
                 logger.warning("[%s] failed to persist missing_page_offset", instance.name)
 
     logger.info("[%s] cycle complete: %d searched", instance.name, searched)
@@ -957,12 +1299,12 @@ async def run_instance_search(
             # chronological mode.  See the missing pass for rationale.
             if instance.search_order == SearchOrder.chronological:
                 try:
-                    await update_instance(
+                    await _persist_offset_with_typed_wrap(
                         instance.id,
                         master_key=master_key,
                         cutoff_page_offset=next_cutoff_page,
                     )
-                except Exception:  # noqa: BLE001
+                except EngineOffsetPersistError:
                     logger.warning("[%s] failed to persist cutoff_page_offset", instance.name)
             searched += cutoff_searched
 
