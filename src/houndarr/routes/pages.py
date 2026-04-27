@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Form, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from houndarr import __version__
@@ -174,11 +174,27 @@ async def logout(request: Request) -> RedirectResponse:
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
-    """Main dashboard page."""
+    """Main dashboard page.
+
+    Renders the /api/status envelope inline as a ``<script
+    type="application/json">`` so dashboard.js can hydrate the
+    top section and instance grid on first paint without waiting
+    on a round-trip.  The HTMX ``every 30s`` trigger takes over
+    for subsequent polls.
+    """
+    from houndarr.database import get_db
+    from houndarr.services.metrics import gather_dashboard_status
+
+    async with get_db() as db:
+        initial_status_envelope = await gather_dashboard_status(db)
     template_name = (
         "partials/pages/dashboard_content.html" if is_hx_request(request) else "dashboard.html"
     )
-    return _render(request, template_name)
+    return _render(
+        request,
+        template_name,
+        initial_status_envelope=initial_status_envelope,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -187,22 +203,55 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 
 @router.get("/logs", response_class=HTMLResponse)
-async def logs_page(request: Request) -> HTMLResponse:
-    """Search log viewer page: initial render with no filters applied."""
+async def logs_page(
+    request: Request,
+    instance_id: str | None = Query(default=None),
+    action: str | None = Query(default=None),
+    search_kind: str | None = Query(default=None),
+    cycle_trigger: str | None = Query(default=None),
+    hide_system: str | None = Query(default=None),
+) -> HTMLResponse:
+    """Search log viewer page.
+
+    Query parameters pre-apply filters so the dashboard's error banner
+    and per-card error pill can deep-link straight to the relevant
+    instance/action rows.
+    """
+    from houndarr.routes.api.logs import (
+        _parse_cycle_trigger,
+        _parse_hide_system,
+        _parse_instance_id,
+        _parse_search_kind,
+    )
     from houndarr.services.log_query import (
         compute_load_more_limit,
         query_logs,
         summarize_rows,
     )
 
+    try:
+        parsed_instance_id = _parse_instance_id(instance_id)
+        parsed_search_kind = _parse_search_kind(search_kind)
+        parsed_cycle_trigger = _parse_cycle_trigger(cycle_trigger)
+        parsed_hide_system = _parse_hide_system(hide_system) if hide_system is not None else True
+    except HTTPException:
+        # Malformed query string: fall back to unfiltered view so the
+        # page still loads rather than bubbling a 422 JSON response.
+        parsed_instance_id = None
+        parsed_search_kind = None
+        parsed_cycle_trigger = None
+        parsed_hide_system = True
+
+    parsed_action = action or None
+
     master_key: bytes = request.app.state.master_key
     instances = await list_instances(master_key=master_key)
     rows = await query_logs(
-        instance_id=None,
-        action=None,
-        search_kind=None,
-        cycle_trigger=None,
-        hide_system=True,
+        instance_id=parsed_instance_id,
+        action=parsed_action,
+        search_kind=parsed_search_kind,
+        cycle_trigger=parsed_cycle_trigger,
+        hide_system=parsed_hide_system,
         before=None,
         limit=50,
     )
@@ -216,16 +265,16 @@ async def logs_page(request: Request) -> HTMLResponse:
         summary=summary,
         limit=50,
         load_more_limit=compute_load_more_limit(50),
-        selected_instance_id=None,
-        selected_action=None,
-        selected_search_kind=None,
-        selected_cycle_trigger=None,
-        selected_hide_system=True,
-        instance_id=None,
-        action=None,
-        search_kind=None,
-        cycle_trigger=None,
-        hide_system=True,
+        selected_instance_id=parsed_instance_id,
+        selected_action=parsed_action,
+        selected_search_kind=parsed_search_kind,
+        selected_cycle_trigger=parsed_cycle_trigger,
+        selected_hide_system=parsed_hide_system,
+        instance_id=parsed_instance_id,
+        action=parsed_action,
+        search_kind=parsed_search_kind,
+        cycle_trigger=parsed_cycle_trigger,
+        hide_system=parsed_hide_system,
         before=None,
     )
 
