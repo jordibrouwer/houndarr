@@ -33,7 +33,7 @@ SONARR_URL = "http://sonarr:8989"
 RADARR_URL = "http://radarr:7878"
 LIDARR_URL = "http://lidarr:8686"
 READARR_URL = "http://readarr:8787"
-WHISPARR_URL = "http://whisparr:6969"
+WHISPARR_V2_URL = "http://whisparr:6969"
 
 _EPISODE: dict[str, Any] = {
     "id": 101,
@@ -63,21 +63,21 @@ _BOOK: dict[str, Any] = {
     "releaseDate": "2023-06-01T00:00:00Z",
     "author": {"id": 60, "authorName": "Test Author"},
 }
-_WHISPARR_EP: dict[str, Any] = {
+_WHISPARR_V2_EP: dict[str, Any] = {
     "id": 501,
     "seriesId": 70,
     "title": "Scene Title",
     "seasonNumber": 1,
     "absoluteEpisodeNumber": 5,
     "releaseDate": {"year": 2023, "month": 9, "day": 1},
-    "series": {"id": 70, "title": "My Whisparr Show"},
+    "series": {"id": 70, "title": "My Whisparr v2 Show"},
 }
 
 _MISSING_SONARR_1 = {"records": [_EPISODE]}
 _MISSING_RADARR_1 = {"records": [_MOVIE]}
 _MISSING_LIDARR_1 = {"records": [_ALBUM]}
 _MISSING_READARR_1 = {"records": [_BOOK]}
-_MISSING_WHISPARR_1 = {"records": [_WHISPARR_EP]}
+_MISSING_WHISPARR_V2_1 = {"records": [_WHISPARR_V2_EP]}
 _MISSING_EMPTY = {"records": []}
 _FUTURE_AIR_DATE = "2999-01-01T00:00:00Z"
 
@@ -460,7 +460,7 @@ async def test_missing_list_calls_are_bounded_per_cycle(
 
 
 # ---------------------------------------------------------------------------
-# Fixtures - Lidarr, Readarr, Whisparr
+# Fixtures - Lidarr, Readarr, Whisparr v2
 # ---------------------------------------------------------------------------
 
 
@@ -497,14 +497,14 @@ async def readarr_instance(db: None, master_key: bytes) -> Instance:
 
 
 @pytest_asyncio.fixture()
-async def whisparr_instance(db: None, master_key: bytes) -> Instance:
-    """Create a real Whisparr instance row (with encrypted API key)."""
+async def whisparr_v2_instance(db: None, master_key: bytes) -> Instance:
+    """Create a real Whisparr v2 instance row (with encrypted API key)."""
     return await create_instance(
         master_key=master_key,
-        name="E2E Whisparr",
+        name="E2E Whisparr v2",
         type=InstanceType.whisparr_v2,
-        url=WHISPARR_URL,
-        api_key="whisparr-key",
+        url=WHISPARR_V2_URL,
+        api_key="whisparr-v2-key",
         batch_size=5,
         hourly_cap=10,
         cooldown_days=7,
@@ -576,31 +576,31 @@ async def test_full_cycle_readarr(readarr_instance: Instance, master_key: bytes)
 
 
 # ---------------------------------------------------------------------------
-# Test - Full cycle: Whisparr
+# Test - Full cycle: Whisparr v2
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio()
 @respx.mock
-async def test_full_cycle_whisparr(whisparr_instance: Instance, master_key: bytes) -> None:
-    """One complete Whisparr search cycle - episode is searched, log and cooldown written."""
-    respx.get(f"{WHISPARR_URL}/api/v3/wanted/missing").mock(
-        return_value=httpx.Response(200, json=_MISSING_WHISPARR_1)
+async def test_full_cycle_whisparr_v2(whisparr_v2_instance: Instance, master_key: bytes) -> None:
+    """One complete Whisparr v2 search cycle - episode is searched, log and cooldown written."""
+    respx.get(f"{WHISPARR_V2_URL}/api/v3/wanted/missing").mock(
+        return_value=httpx.Response(200, json=_MISSING_WHISPARR_V2_1)
     )
-    respx.post(f"{WHISPARR_URL}/api/v3/command").mock(
+    respx.post(f"{WHISPARR_V2_URL}/api/v3/command").mock(
         return_value=httpx.Response(201, json={"id": 5})
     )
 
-    count = await run_instance_search(whisparr_instance, master_key)
+    count = await run_instance_search(whisparr_v2_instance, master_key)
 
     assert count == 1
     logs = await _log_rows()
     assert len(logs) == 1
     assert logs[0]["action"] == "searched"
     assert logs[0]["item_id"] == 501
-    assert logs[0]["item_type"] == "whisparr_episode"
+    assert logs[0]["item_type"] == "whisparr_v2_episode"
 
-    cds = await _cooldown_rows(whisparr_instance.id)
+    cds = await _cooldown_rows(whisparr_v2_instance.id)
     assert len(cds) == 1
     assert cds[0]["item_id"] == 501
-    assert cds[0]["item_type"] == "whisparr_episode"
+    assert cds[0]["item_type"] == "whisparr_v2_episode"
