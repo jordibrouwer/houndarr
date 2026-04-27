@@ -46,6 +46,13 @@
 .heroRight {
   flex: 1 1 auto;
   min-width: 0;
+  /* Cap the layout box, not the image. The hero <img> stays at natural
+     full height (so the dashboard preview starts at the top and renders
+     sharp), but the layout slot it occupies stops at 820px.  Anything
+     past that bleeds visually into the features section underneath and
+     is clipped by .heroBanner's overflow: hidden, giving the "preview
+     runs behind the next section" feel the IdealImage version had. */
+  max-height: 820px;
   overflow: visible;
 }
 
@@ -71,7 +78,7 @@
 }
 
 .heroTitle {
-  font-size: 2.75rem !important;
+  font-size: 3.025rem !important;
   font-weight: 800 !important;
   line-height: 1.1 !important;
   letter-spacing: -0.03em;
@@ -81,12 +88,12 @@
 
 @media screen and (max-width: 996px) {
   .heroTitle {
-    font-size: 2rem !important;
+    font-size: 2.2rem !important;
   }
 }
 
 .heroTagline {
-  font-size: 1.0625rem;
+  font-size: 1.16875rem;
   color: #94a3b8;
   margin-bottom: 1.5rem;
   line-height: 1.65;
@@ -108,7 +115,7 @@
   flex-wrap: wrap;
   gap: 0.1rem 0;
   margin-bottom: 2rem;
-  font-size: 0.75rem;
+  font-size: 0.825rem;
 }
 
 @media screen and (max-width: 996px) {
@@ -121,12 +128,12 @@
   color: #475569;
   margin-right: 0.5rem;
   font-family: 'Inter', sans-serif;
-  font-size: 0.75rem;
+  font-size: 0.825rem;
 }
 
 .typeBadge {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.6875rem;
+  font-size: 0.75625rem;
   font-weight: 500;
 }
 
@@ -134,7 +141,7 @@
   color: #2a3448;
   margin: 0 0.375rem;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.75rem;
+  font-size: 0.825rem;
 }
 
 /* ── CTA buttons ─────────────────────────────────────────────────────────── */
@@ -165,42 +172,31 @@
 }
 
 /* ── Hero screenshot ─────────────────────────────────────────────────────── */
-/* IdealImage renders <span><img/></span>; .heroScreenshot lands on the span.
-   Layout cap (max-height) + drop shadow stay on the span. Rules that must
-   track the visible bitmap (rounded corners, 1px ring) live on the inner
-   <img>, so the ring follows the image to the point where .heroBanner's
-   overflow: hidden clips it (i.e. it runs behind the next section instead
-   of stopping at 820px). */
+/* The hero is a plain <img>, not IdealImage. width: 100% scales it to
+   the column; no height cap on the img itself, so it renders at the
+   full natural aspect.  The layout cap lives on .heroRight above,
+   which lets the bottom of the image bleed into the features section
+   (clipped by .heroBanner overflow: hidden). */
 .heroScreenshot {
+  display: block;
   border-radius: 10px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.6),
+    0 0 0 1px rgba(30, 38, 56, 0.9);
   width: 100%;
   height: auto;
-  max-height: 820px;
   transform: perspective(1400px) rotateY(-5deg) rotateX(1.5deg);
   transition:
     transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
     box-shadow 0.4s ease;
 }
 
-.heroScreenshot img {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 10px;
-  box-shadow: 0 0 0 1px rgba(30, 38, 56, 0.9);
-  transition: box-shadow 0.4s ease;
-}
-
 .heroScreenshot:hover {
   transform: perspective(1400px) rotateY(-2deg) rotateX(0.5deg) scale(1.01);
   box-shadow:
     0 24px 72px rgba(0, 0, 0, 0.65),
-    0 0 50px rgba(34, 211, 238, 0.03);
-}
-
-.heroScreenshot:hover img {
-  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.12);
+    0 0 50px rgba(34, 211, 238, 0.03),
+    0 0 0 1px rgba(34, 211, 238, 0.12);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -296,4 +292,48 @@
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.45),
     0 0 0 1px rgba(34, 211, 238, 0.1);
+}
+
+/* Pin every gallery thumbnail to the landscape aspect of the four
+   desktop shots (5088×3330). IdealImage renders an outer wrapper div
+   plus an svg sizer plus an img; setting aspect-ratio on the .thumb
+   wrapper plus 100%/100% on every direct child forces all three to
+   the same rectangle, so the squarer Admin shot crops uniformly.
+   object-position: top keeps the page header + Security / Updates
+   visible inline; the Danger zone is what gets trimmed.
+
+   The zoom plugin (medium-zoom) lifts the <img> out of the gallery
+   when opened, so the natural full-height Admin view is one click
+   away. The :has() rule below relaxes overflow during animation so
+   the lifted image is not clipped by the thumb's clipping box. */
+.screenshotThumb {
+  position: relative;
+  aspect-ratio: 5088 / 3330;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.screenshotThumb > * {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.screenshotThumb svg {
+  display: block;
+}
+
+.screenshotThumb img {
+  object-fit: cover;
+  object-position: top;
+}
+
+.screenshotThumb:has(img:global(.medium-zoom-image--opened)) {
+  overflow: visible;
+}
+
+.screenshotThumb img:global(.medium-zoom-image--opened) {
+  width: auto !important;
+  height: auto !important;
+  object-fit: initial;
+  object-position: initial;
 }
