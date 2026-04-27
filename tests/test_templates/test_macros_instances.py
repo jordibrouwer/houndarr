@@ -93,8 +93,8 @@ class TestInstanceRowStatePill:
         src = _IMPORT + "{{ instances.instance_row(instance, active_error_ids) }}"
         result = render_macro(src, instance=_instance_stub(enabled=True), active_error_ids=[])
         assert "Active" in result
-        assert "station-pulse-dot" in result
-        assert "text-success" in result
+        assert "status-dot--active" in result
+        assert "status-pill--active" in result
         assert "Error" not in result
         assert "Disabled" not in result
 
@@ -106,16 +106,17 @@ class TestInstanceRowStatePill:
             active_error_ids=[7],
         )
         assert "Error" in result
-        assert "station-pulse-dot" in result
-        assert "text-danger" in result
+        assert "status-dot--error" in result
+        assert "status-pill--error" in result
         assert ">Active<" not in result
 
     def test_disabled_renders_disabled_pill(self, render_macro: Callable[..., str]) -> None:
         src = _IMPORT + "{{ instances.instance_row(instance, active_error_ids) }}"
         result = render_macro(src, instance=_instance_stub(enabled=False), active_error_ids=[])
         assert "Disabled" in result
-        assert "text-slate-500" in result
-        assert "station-pulse-dot" not in result
+        assert "status-pill--disabled" in result
+        assert "status-dot--active" not in result
+        assert "status-dot--error" not in result
         assert ">Active<" not in result
         assert ">Error<" not in result
 

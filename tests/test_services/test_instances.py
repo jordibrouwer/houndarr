@@ -389,3 +389,95 @@ async def test_update_instance_snapshot_overwrites_prior_values(
     assert refreshed is not None
     assert refreshed.monitored_total == 60
     assert refreshed.unreleased_count == 5
+
+
+# ---------------------------------------------------------------------------
+# active_error_instance_ids: 2-day window
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio()
+async def test_active_error_ignores_rows_older_than_window(db: None, master_key: bytes) -> None:
+    """An error row older than 2 days must not keep the dot lit. If a
+    genuinely stuck instance is still failing, a fresh error row lands
+    well inside the window; a two-day silence means the problem is
+    stale."""
+    from datetime import UTC, datetime, timedelta
+
+    from houndarr.database import get_db
+    from houndarr.services.instances import active_error_instance_ids
+
+    inst = await _make(master_key)
+    stale = (datetime.now(tz=UTC) - timedelta(days=3)).isoformat()
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT INTO search_log (instance_id, action, cycle_trigger, timestamp)"
+            " VALUES (?, 'error', 'system', ?)",
+            (inst.id, stale),
+        )
+        await conn.commit()
+
+    assert await active_error_instance_ids() == set()
+
+
+@pytest.mark.asyncio()
+async def test_active_error_reports_fresh_error(db: None, master_key: bytes) -> None:
+    """An error row from the last minute still lights the dot."""
+    from datetime import UTC, datetime
+
+    from houndarr.database import get_db
+    from houndarr.services.instances import active_error_instance_ids
+
+    inst = await _make(master_key)
+    fresh = datetime.now(tz=UTC).isoformat()
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT INTO search_log (instance_id, action, cycle_trigger, timestamp)"
+            " VALUES (?, 'error', 'system', ?)",
+            (inst.id, fresh),
+        )
+        await conn.commit()
+
+    assert await active_error_instance_ids() == {inst.id}
+
+
+@pytest.mark.asyncio()
+async def test_active_error_excludes_same_day_older_row(db: None, master_key: bytes) -> None:
+    """Regression for a timestamp format-mismatch bug in the window clause.
+
+    ``search_log.timestamp`` is stored via ``strftime('%Y-%m-%dT%H:%M:%fZ',
+    'now')`` which produces values like ``2026-04-19T14:30:00.123Z`` (ISO
+    8601, 'T' separator, 'Z' suffix). A prior version of the window clause
+    used ``datetime('now', '-2 days')``, which emits ``YYYY-MM-DD HH:MM:SS``
+    (space separator, no fractional seconds, no 'Z'). SQLite compares TEXT
+    lexicographically, so at position 10 the cutoff's space (0x20) sorted
+    below the stored 'T' (0x54); any row whose calendar date equalled the
+    cutoff's was included regardless of its time-of-day, letting stale
+    errors up to ~24 h older than the 48-hour window light the dashboard
+    dot.
+
+    Seed a row at midnight UTC of the cutoff's calendar date. That row is
+    between 24 h and 48 h older than the exact 48-hour cutoff for any
+    non-midnight wall clock and must therefore be excluded.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from houndarr.database import get_db
+    from houndarr.services.instances import active_error_instance_ids
+
+    inst = await _make(master_key)
+    cutoff_date = (datetime.now(tz=UTC) - timedelta(days=2)).date()
+    # Match the stored ISO 8601 format including the 'Z' suffix; the bug
+    # triggers only when calendar dates collide, which is why we pin the
+    # day portion to the cutoff's date and set the time portion to
+    # midnight so the row is strictly older than the exact 48 h cutoff.
+    stale = f"{cutoff_date.isoformat()}T00:00:00.000Z"
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT INTO search_log (instance_id, action, cycle_trigger, timestamp)"
+            " VALUES (?, 'error', 'system', ?)",
+            (inst.id, stale),
+        )
+        await conn.commit()
+
+    assert await active_error_instance_ids() == set()

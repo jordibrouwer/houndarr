@@ -20,6 +20,138 @@
    keeps the form visually consistent. #}
 {% set select_cls = input_cls + " hd-select-chevron appearance-none pr-10 bg-no-repeat" %}
 
+{#- tip_icon: inline helper that emits a Lucide help-circle trigger for
+    the tooltip controller (tooltip.js + .app-tooltip CSS).  The
+    instance-form has eight hand-authored per-type select labels outside
+    the forms.form_field / forms.select_field macros, so this keeps the
+    SVG body from repeating eight times.  For fields rendered via those
+    macros, pass tip_ref= directly instead. -#}
+{%- macro tip_icon(slug, aria_label) -%}
+<button type="button" class="tip-trigger" data-tip-ref="{{ slug }}" aria-label="Help: {{ aria_label }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg></button>
+{%- endmacro -%}
+
+{#- Tooltip bodies.  tooltip.js resolves `data-tip-ref="slug"` to
+    `<template id="tip-slug">` and clones its content into the shared
+    floating panel on open.  Copy is paraphrased from
+    settings_help_content.html so voice matches the in-app guide.
+    Hidden at render time; zero layout cost. -#}
+<template id="tip-batch_size">
+  <p class="tip__eyebrow">Batch size · per cycle</p>
+  <p>Maximum missing items considered per search cycle. Start low, raise gradually once indexers stay stable; this is the first knob to tune if backlog is not clearing.</p>
+  <p class="tip__hint">Default 2.</p>
+</template>
+<template id="tip-sleep_interval_mins">
+  <p class="tip__eyebrow">Cycle interval · minutes</p>
+  <p>Wait time between cycles for this instance. Lower values run more frequently; watch the logs for indexer errors if you reduce it aggressively.</p>
+  <p class="tip__hint">Default 30.</p>
+</template>
+<template id="tip-hourly_cap">
+  <p class="tip__eyebrow">Hourly cap · missing</p>
+  <p>Maximum successful missing searches per hour, independent of batch size. Houndarr pauses once you hit the cap so indexers do not ban you.</p>
+  <p class="tip__hint">Default 4. 0 disables the cap; only set 0 if you know your indexer's own per-hour limit.</p>
+</template>
+<template id="tip-cooldown_days">
+  <p class="tip__eyebrow">Cooldown · missing</p>
+  <p>Minimum days before the same missing item can be searched again. Higher values reduce repeat-search noise; release-aware retry still kicks in for freshly-released items.</p>
+  <p class="tip__hint">Default 14 days.</p>
+</template>
+<template id="tip-post_release_grace_hrs">
+  <p class="tip__eyebrow">Post-release grace</p>
+  <p>Hours to wait after an item's release date before searching. Items still inside this window log as <code>post-release grace (Nh)</code> and skip; items with no date log as <code>not yet released</code>.</p>
+  <p class="tip__hint">Default 6 hours. Release-date priority differs per *arr (see the docs).</p>
+</template>
+<template id="tip-queue_limit">
+  <p class="tip__eyebrow">Queue backpressure</p>
+  <p>Skip the cycle if the download-client queue is at or above this count. Keeps Houndarr from piling on when downloads are already backed up; an unreachable queue endpoint lets the cycle proceed.</p>
+  <p class="tip__hint">0 disables the check.</p>
+</template>
+<template id="tip-allowed_time_window">
+  <p class="tip__eyebrow">Allowed search window</p>
+  <p>Restrict scheduled cycles to one or more <code>HH:MM-HH:MM</code> ranges in the container's local time. Manual Run Now bypasses the window.</p>
+  <p class="tip__hint">Blank = always allowed. Ranges can wrap past midnight (e.g. <code>22:00-06:00</code>).</p>
+</template>
+<template id="tip-search_order">
+  <p class="tip__eyebrow">Search order</p>
+  <p>Chronological walks the wanted list oldest-first with a persistent page offset so items further down do not starve. Random picks a different slice each cycle so searches feel spread across the catalogue rather than clustered by release date.</p>
+  <p class="tip__hint">Random is the default on fresh installs.</p>
+</template>
+<template id="tip-sonarr_search_mode">
+  <p class="tip__eyebrow">Sonarr missing search mode</p>
+  <p>Episode (default) fires one command per missing episode. Season-context groups missing episodes by season and sends one SeasonSearch per season: fewer API calls but can surface noisier results.</p>
+  <p class="tip__hint">Cooldown is tracked at the season level in season-context mode.</p>
+</template>
+<template id="tip-lidarr_search_mode">
+  <p class="tip__eyebrow">Lidarr missing search mode</p>
+  <p>Album (default) fires one command per missing album. Artist-context groups missing albums by artist and searches all of them in one request: fewer calls, broader sweep.</p>
+  <p class="tip__hint">Cooldown is tracked at the artist level in artist-context mode.</p>
+</template>
+<template id="tip-readarr_search_mode">
+  <p class="tip__eyebrow">Readarr missing search mode</p>
+  <p>Book (default) fires one command per missing book. Author-context groups missing books by author and searches all of them in one request: fewer calls, broader sweep.</p>
+  <p class="tip__hint">Cooldown is tracked at the author level in author-context mode.</p>
+</template>
+<template id="tip-whisparr_search_mode">
+  <p class="tip__eyebrow">Whisparr v2 missing search mode</p>
+  <p>Episode (default) fires one command per missing episode. Season-context groups by season with a single SeasonSearch: fewer calls but may pull noisier results.</p>
+  <p class="tip__hint">Cooldown is tracked at the season level in season-context mode.</p>
+</template>
+<template id="tip-cutoff_enabled">
+  <p class="tip__eyebrow">Cutoff search</p>
+  <p>Optional second pass that searches items below your quality cutoff. Keep it off until the missing backlog is stable; enabling both passes at once competes for indexer budget.</p>
+  <p class="tip__hint">Uses a separate batch, cap, and cooldown from the missing pass.</p>
+</template>
+<template id="tip-cutoff_batch_size">
+  <p class="tip__eyebrow">Cutoff batch · per cycle</p>
+  <p>Maximum cutoff items considered per cutoff cycle. Cutoff is a secondary pass, so keep this smaller than the missing batch.</p>
+  <p class="tip__hint">Default 1.</p>
+</template>
+<template id="tip-cutoff_cooldown_days">
+  <p class="tip__eyebrow">Cutoff cooldown</p>
+  <p>Minimum days before the same cutoff item can be searched again. Separate from the missing cooldown so the two passes do not draw from the same retry budget.</p>
+  <p class="tip__hint">Default 21 days.</p>
+</template>
+<template id="tip-cutoff_hourly_cap">
+  <p class="tip__eyebrow">Cutoff hourly cap</p>
+  <p>Maximum successful cutoff searches per hour, independent of the missing cap. Keeps the cutoff pass from eating your missing-pass budget.</p>
+  <p class="tip__hint">Default 1. 0 disables the cutoff cap.</p>
+</template>
+<template id="tip-upgrade_enabled">
+  <p class="tip__eyebrow">Upgrade search</p>
+  <p>Opt-in third pass that re-searches items already meeting your quality cutoff, letting your *arr find better releases. Different from cutoff search, which targets items <em>below</em> cutoff.</p>
+  <p class="tip__hint">Enable last, only after missing and cutoff backlogs are stable.</p>
+</template>
+<template id="tip-upgrade_batch_size">
+  <p class="tip__eyebrow">Upgrade batch · per cycle</p>
+  <p>Maximum upgrade items considered per upgrade cycle. Lowest priority of the three passes; keep small so upgrades stay a trickle, not a sweep.</p>
+  <p class="tip__hint">Default 1. Hard cap: 5 (values above 5 are clamped).</p>
+</template>
+<template id="tip-upgrade_cooldown_days">
+  <p class="tip__eyebrow">Upgrade cooldown</p>
+  <p>Minimum days before the same upgrade item is re-searched. Default is deliberately long: upgrades are a quality-of-life pass, not a priority.</p>
+  <p class="tip__hint">Default 90 days. Minimum 7 (values below 7 are clamped).</p>
+</template>
+<template id="tip-upgrade_hourly_cap">
+  <p class="tip__eyebrow">Upgrade hourly cap</p>
+  <p>Maximum successful upgrade searches per hour. Separate budget so the upgrade pass cannot starve missing or cutoff.</p>
+  <p class="tip__hint">Default 1. Hard cap: 5. 0 disables the upgrade cap.</p>
+</template>
+<template id="tip-upgrade_sonarr_search_mode">
+  <p class="tip__eyebrow">Sonarr upgrade search mode</p>
+  <p>Strategy for upgrade-pass commands, independent of the missing mode. Episode fires per-episode; season-context groups by season for fewer, broader commands.</p>
+</template>
+<template id="tip-upgrade_lidarr_search_mode">
+  <p class="tip__eyebrow">Lidarr upgrade search mode</p>
+  <p>Strategy for upgrade-pass commands, independent of the missing mode. Album fires per-album; artist-context groups by artist for fewer, broader commands.</p>
+</template>
+<template id="tip-upgrade_readarr_search_mode">
+  <p class="tip__eyebrow">Readarr upgrade search mode</p>
+  <p>Strategy for upgrade-pass commands, independent of the missing mode. Book fires per-book; author-context groups by author for fewer, broader commands.</p>
+</template>
+<template id="tip-upgrade_whisparr_search_mode">
+  <p class="tip__eyebrow">Whisparr v2 upgrade search mode</p>
+  <p>Strategy for upgrade-pass commands, independent of the missing mode. Episode fires per-episode; season-context groups by season for fewer, broader commands.</p>
+</template>
+
 <div id="{{ 'edit-instance-form-shell-' ~ instance.core.id if is_edit else 'add-instance-form-shell' }}">
   {% if error is defined and error %}
   {% call alerts.alert("error", prefix="mb-3") %}{{ error }}{% endcall %}
@@ -174,7 +306,7 @@
         <div class="sm:col-span-2" data-sonarr-only="true"
              {% if instance.core.type.value != 'sonarr' %}style="display:none;"{% endif %}>
           <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-sonarr-mode">
-            Sonarr Missing Search Mode
+            Sonarr Missing Search Mode{{ tip_icon("sonarr_search_mode", "Sonarr missing search mode") }}
           </label>
           <select id="{{ form_id }}-sonarr-mode" name="sonarr_search_mode"
                   data-default-value="{{ defaults.sonarr_search_mode.value }}"
@@ -187,7 +319,7 @@
         <div class="sm:col-span-2" data-lidarr-only="true"
              {% if instance.core.type.value != 'lidarr' %}style="display:none;"{% endif %}>
           <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-lidarr-mode">
-            Lidarr Missing Search Mode
+            Lidarr Missing Search Mode{{ tip_icon("lidarr_search_mode", "Lidarr missing search mode") }}
           </label>
           <select id="{{ form_id }}-lidarr-mode" name="lidarr_search_mode"
                   data-default-value="{{ defaults.lidarr_search_mode.value }}"
@@ -200,7 +332,7 @@
         <div class="sm:col-span-2" data-readarr-only="true"
              {% if instance.core.type.value != 'readarr' %}style="display:none;"{% endif %}>
           <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-readarr-mode">
-            Readarr Missing Search Mode
+            Readarr Missing Search Mode{{ tip_icon("readarr_search_mode", "Readarr missing search mode") }}
           </label>
           <select id="{{ form_id }}-readarr-mode" name="readarr_search_mode"
                   data-default-value="{{ defaults.readarr_search_mode.value }}"
@@ -213,7 +345,7 @@
         <div class="sm:col-span-2" data-whisparr_v2-only="true"
              {% if instance.core.type.value != 'whisparr_v2' %}style="display:none;"{% endif %}>
           <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-whisparr-mode">
-            Whisparr v2 Missing Search Mode
+            Whisparr v2 Missing Search Mode{{ tip_icon("whisparr_search_mode", "Whisparr v2 missing search mode") }}
           </label>
           <select id="{{ form_id }}-whisparr-mode" name="whisparr_search_mode"
                   data-default-value="{{ defaults.whisparr_search_mode.value }}"
@@ -311,7 +443,7 @@
       <div data-sonarr-only="true"
            {% if instance.core.type.value != 'sonarr' %}style="display:none;"{% endif %}>
         <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-upgrade-sonarr-mode">
-          Sonarr Upgrade Search Mode
+          Sonarr Upgrade Search Mode{{ tip_icon("upgrade_sonarr_search_mode", "Sonarr upgrade search mode") }}
         </label>
         <select id="{{ form_id }}-upgrade-sonarr-mode" name="upgrade_sonarr_search_mode"
                 data-default-value="{{ defaults.upgrade_sonarr_search_mode.value }}"
@@ -323,7 +455,7 @@
       <div data-lidarr-only="true"
            {% if instance.core.type.value != 'lidarr' %}style="display:none;"{% endif %}>
         <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-upgrade-lidarr-mode">
-          Lidarr Upgrade Search Mode
+          Lidarr Upgrade Search Mode{{ tip_icon("upgrade_lidarr_search_mode", "Lidarr upgrade search mode") }}
         </label>
         <select id="{{ form_id }}-upgrade-lidarr-mode" name="upgrade_lidarr_search_mode"
                 data-default-value="{{ defaults.upgrade_lidarr_search_mode.value }}"
@@ -335,7 +467,7 @@
       <div data-readarr-only="true"
            {% if instance.core.type.value != 'readarr' %}style="display:none;"{% endif %}>
         <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-upgrade-readarr-mode">
-          Readarr Upgrade Search Mode
+          Readarr Upgrade Search Mode{{ tip_icon("upgrade_readarr_search_mode", "Readarr upgrade search mode") }}
         </label>
         <select id="{{ form_id }}-upgrade-readarr-mode" name="upgrade_readarr_search_mode"
                 data-default-value="{{ defaults.upgrade_readarr_search_mode.value }}"
@@ -347,7 +479,7 @@
       <div data-whisparr_v2-only="true"
            {% if instance.core.type.value != 'whisparr_v2' %}style="display:none;"{% endif %}>
         <label class="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide" for="{{ form_id }}-upgrade-whisparr-mode">
-          Whisparr v2 Upgrade Search Mode
+          Whisparr v2 Upgrade Search Mode{{ tip_icon("upgrade_whisparr_search_mode", "Whisparr v2 upgrade search mode") }}
         </label>
         <select id="{{ form_id }}-upgrade-whisparr-mode" name="upgrade_whisparr_search_mode"
                 data-default-value="{{ defaults.upgrade_whisparr_search_mode.value }}"
