@@ -1,73 +1,12 @@
-{# Single instance row: used by both initial render and HTMX swap after update. #}
-<tr id="instance-row-{{ instance.core.id }}"
-    class="border-b border-border-subtle hover:bg-surface-2 transition-colors duration-fast ease-station">
-  <td data-col="name" class="px-4 py-3 font-medium text-white font-sans">{{ instance.core.name }}</td>
-  <td data-col="type" class="px-4 py-3">
-    {%- set badge_map = {
-      'sonarr':      {'bg': 'bg-sonarr-bg',      'text': 'text-sonarr',      'border': 'border-sonarr/40',      'label': 'Sonarr'},
-      'radarr':      {'bg': 'bg-radarr-bg',      'text': 'text-radarr',      'border': 'border-radarr/40',      'label': 'Radarr'},
-      'lidarr':      {'bg': 'bg-lidarr-bg',      'text': 'text-lidarr',      'border': 'border-lidarr/40',      'label': 'Lidarr'},
-      'readarr':     {'bg': 'bg-readarr-bg',     'text': 'text-readarr',     'border': 'border-readarr/40',     'label': 'Readarr'},
-      'whisparr_v2': {'bg': 'bg-whisparr-bg',    'text': 'text-whisparr',    'border': 'border-whisparr/40',    'label': 'Whisparr v2'},
-      'whisparr_v3': {'bg': 'bg-whisparr-v3-bg', 'text': 'text-whisparr-v3', 'border': 'border-whisparr-v3/40', 'label': 'Whisparr v3'},
-    } -%}
-    {%- set b = badge_map.get(instance.core.type.value, badge_map['sonarr']) -%}
-    <span class="inline-flex items-center px-2 py-0.5 rounded-chip text-xs font-mono {{ b.bg }} {{ b.text }} border {{ b.border }}">
-      {{ b.label }}
-    </span>
-  </td>
-  <td data-col="url" class="px-4 py-3 text-slate-400 text-sm truncate max-w-xs font-mono text-xs">{{ instance.core.url }}</td>
-  <td data-col="status" class="px-4 py-3 text-center">
-    {# Fixed min-width on the pill + label so toggling Active <-> Disabled
-       (6 vs 8 chars) does not re-layout the column and shift every
-       sibling row. Red state uses the same shape + pulse as green so
-       the eye picks up the colour shift without a layout jump. #}
-    {% if instance.core.enabled and instance.core.id in (active_error_ids or []) %}
-      <span class="inline-flex items-center justify-center gap-1 text-xs text-danger min-w-[4.5rem]">
-        <span class="w-1.5 h-1.5 rounded-full bg-danger inline-block station-pulse-dot" title="Instance is reporting errors" aria-label="Instance is reporting errors"></span>
-        <span class="hidden sm:inline">Error</span>
-      </span>
-    {% elif instance.core.enabled %}
-      <span class="inline-flex items-center justify-center gap-1 text-xs text-success min-w-[4.5rem]">
-        <span class="w-1.5 h-1.5 rounded-full bg-success inline-block station-pulse-dot" title="Search enabled" aria-label="Search enabled"></span>
-        <span class="hidden sm:inline">Active</span>
-      </span>
-    {% else %}
-      <span class="inline-flex items-center justify-center gap-1 text-xs text-slate-500 min-w-[4.5rem]">
-        <span class="w-1.5 h-1.5 rounded-full bg-slate-600 inline-block" title="Search disabled" aria-label="Search disabled"></span>
-        <span class="hidden sm:inline">Disabled</span>
-      </span>
-    {% endif %}
-  </td>
-  <td data-col="batch" class="px-4 py-3 text-sm text-slate-400 font-mono">
-    {{ instance.missing.batch_size }} / {{ instance.missing.sleep_interval_mins }}m
-  </td>
-  <td data-col="actions" class="px-4 py-3 text-right">
-    <div class="flex items-center justify-end gap-2">
-      <button
-        hx-post="/settings/instances/{{ instance.core.id }}/toggle-enabled"
-        hx-target="#instance-row-{{ instance.core.id }}"
-        hx-swap="outerHTML"
-        class="px-3 py-1 text-xs rounded-inset transition-colors duration-base ease-station min-w-[4.25rem] text-center {% if instance.core.enabled %}bg-warning-bg hover:bg-warning/20 text-warning border border-warning-border{% else %}bg-success-bg hover:bg-success/20 text-success border border-success-border{% endif %}">
-        {{ 'Disable' if instance.core.enabled else 'Enable' }}
-      </button>
-      <button
-        type="button"
-        data-open-add-instance-modal="true"
-        hx-get="/settings/instances/{{ instance.core.id }}/edit"
-        hx-target="#add-instance-modal-content"
-        hx-swap="innerHTML"
-        class="px-3 py-1 text-xs rounded-inset bg-surface-3 hover:bg-border-default text-slate-200 border border-border-default transition-colors duration-base ease-station">
-        Edit
-      </button>
-      <button
-        hx-delete="/settings/instances/{{ instance.core.id }}"
-        hx-target="#instance-row-{{ instance.core.id }}"
-        hx-swap="outerHTML"
-        hx-confirm="Delete '{{ instance.core.name }}'? This cannot be undone."
-        class="px-3 py-1 text-xs rounded-inset bg-danger-bg hover:bg-danger/20 text-danger border border-danger-border transition-colors duration-base ease-station">
-        Delete
-      </button>
-    </div>
-  </td>
-</tr>
+{# Single instance row: used by both initial render and HTMX swap
+   after update.  The `instances` import alias intentionally shadows
+   the loop variable named `instances` in
+   partials/instance_table_body.html and the `{% for instance in
+   instances %}` loop in partials/pages/settings_content.html: Jinja
+   import scoping confines the alias to this file, and the loop's
+   per-iteration `instance` variable is inherited via the include's
+   default with-context behaviour.  Removing the import or switching
+   the include to `without context` would break this; keep the
+   import inside this partial. #}
+{%- import "_macros/instances.html" as instances -%}
+{{ instances.instance_row(instance, active_error_ids) }}
