@@ -20,7 +20,17 @@ to create an admin username and password.
 
 ## 2. Log in
 
-After creating your account, log in with your new credentials.
+After creating your account, log in with your new credentials. The
+Dashboard greets you with an empty-state panel until you add your
+first instance:
+
+<Image
+  img={require('@site/static/img/screenshots/houndarr-dashboard-empty.png')}
+  alt="The Houndarr Dashboard in its empty first-run state: the subheader reads 'No hounds on patrol yet.' above a centered panel with a dashed-circle icon, 'No instances configured' title, body copy naming Sonarr, Radarr, Lidarr, Readarr, and Whisparr, and a primary '+ Add your first instance' button"
+/>
+
+Click **Add your first instance** or open the **Settings** link in
+the top nav to continue.
 
 ## 3. Add your instances
 
@@ -72,21 +82,47 @@ searching on the configured schedule.
 
 ## The Dashboard
 
-Once instances are enabled, the Dashboard shows:
+Once instances are enabled, the Dashboard has two sections.
+
+### Library health
+
+The top section shows:
 
 - An **adaptive subheader** with an *N of M hounds on patrol* sentence
   and the most recent dispatch timestamp
 - A **library-health bar** with five gating segments (eligible,
-  cutoff cooldown, cooldown, upgrade cooldown, unreleased) summed
+  cooldown, cutoff cooldown, upgrade cooldown, unreleased) summed
   across every configured instance
 - A **Recent hunts** strip listing the last 5 dispatches in the past
   7 days, each in its instance's type color
-- Per-instance **cards** with a type eyebrow, instance name, 3-stat
-  row (`WATCHING` monitored total, `ELIGIBLE` ready-to-search count,
-  and `SEARCHED` lifetime dispatches), a **Cooldown schedule** inset
-  panel showing the soonest, median, and latest items to unlock with
-  their titles and time-until-unlock, a policy chip row with tooltips,
-  and a type-colored **Run Now** outline button
+
+<Image
+  img={require('@site/static/img/screenshots/houndarr-dashboard-library-health.png')}
+  alt="The Houndarr Dashboard library-health section with the adaptive subheader, a five-segment library-health bar, and the Recent hunts strip of the last five dispatches"
+/>
+
+<figure className="docs-screenshot-portrait">
+  <Image
+    img={require('@site/static/img/screenshots/houndarr-dashboard-library-health-mobile.png')}
+    alt="The Houndarr Dashboard library-health section rendered on a phone-width viewport with the subheader, gating bar, legend, and Recent hunts list stacked vertically"
+  />
+  <figcaption>
+    Same section on a phone-width viewport; the Recent hunts strip
+    sits as a scrollable list under the gating bar.
+  </figcaption>
+</figure>
+
+### Instances
+
+The lower section lays out one **card per instance** with:
+
+- A type eyebrow, instance name, and a 3-stat row (`WATCHING`
+  monitored total, `ELIGIBLE` ready-to-search count, and `SEARCHED`
+  lifetime dispatches)
+- A **Cooldown schedule** inset panel showing the soonest, median,
+  and latest items to unlock, each with title and time-until-unlock
+- A policy chip row with tooltips, and a type-colored **Run Now**
+  outline button
 - An **error banner** and a red `N errors` pill on any card whose
   latest `search_log` row is an error; both deep-link to the Logs
   page filtered to that instance
@@ -94,6 +130,17 @@ Once instances are enabled, the Dashboard shows:
   footer, disabled Run Now) for any instance with `enabled=0`
 
 <Image
-  img={require('@site/static/img/screenshots/houndarr-dashboard.png')}
-  alt="The Houndarr Dashboard with top-level searched / skipped / error counts and per-instance cards showing live metrics and Run Now buttons"
+  img={require('@site/static/img/screenshots/houndarr-dashboard-instances.png')}
+  alt="The Houndarr Dashboard Instances section showing per-instance cards with WATCHING / ELIGIBLE / SEARCHED stats, Cooldown schedule panel, policy chips, and Run Now button"
 />
+
+<figure className="docs-screenshot-portrait">
+  <Image
+    img={require('@site/static/img/screenshots/houndarr-dashboard-instances-mobile.png')}
+    alt="The Houndarr Dashboard Instances section on a phone-width viewport with cards stacked one per row"
+  />
+  <figcaption>
+    Same layout on a phone-width viewport; cards stack into a single
+    column.
+  </figcaption>
+</figure>

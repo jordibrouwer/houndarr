@@ -23,15 +23,20 @@ multi-user support, or media file manipulation.
 
 ## Setup & Run
 
+`just` is the canonical interface. Install it via `brew install just`
+(macOS) or `cargo install just`. The repo's `justfile` wires every
+gate, every test slice, and the dev server, so most agent work goes
+through `just <recipe>` rather than `.venv/bin/...`.
+
 ```bash
-# Create venv and install
+# Create venv and install (one-time bootstrap)
 python3 -m venv .venv
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pip install -e .
 
 # Run locally (dev mode; auto-reload, API docs at /docs)
-.venv/bin/python -m houndarr --data-dir ./data-dev --dev
+just dev
 ```
 
 Dev server: `http://localhost:8877`.
@@ -40,9 +45,44 @@ Dev server: `http://localhost:8877`.
 
 ## Quality Gates
 
-Run **all five** before every commit. These are the core local gates; CI
-also enforces them as part of the required checks, alongside additional
+Run before every commit. CI enforces the same five plus additional
 security and container checks.
+
+```bash
+just check      # lint + format-check + mypy + bandit + full pytest, in CI order
+just quick      # lint + mypy + non-integration pytest (fast feedback loop)
+just fix        # ruff --fix + ruff format, applied in place
+```
+
+`just` is the source of truth.  Individual gates are also available
+when the full sweep is overkill:
+
+```bash
+just lint       # ruff check src/ tests/
+just fmt-check  # ruff format --check src/ tests/
+just type       # mypy src/ (strict)
+just sec        # bandit -r src/ -c pyproject.toml
+just test       # pytest (full suite)
+```
+
+### Recipe index
+
+```bash
+just            # list every recipe
+just check      # all five gates, CI order
+just quick      # lint + type + non-integration pytest (fast feedback loop)
+just fix        # ruff check --fix + ruff format, in place
+just test-quick # pytest -m "not integration"
+just test-integration  # pytest -m integration tests/test_e2e/
+just test-browser chromium  # Playwright e2e against a live stack
+just dev        # python -m houndarr --data-dir ./data-dev --dev
+```
+
+### Without `just`
+
+If `just` is not installed, every recipe is a thin wrapper; read the
+`justfile` at the repo root for the underlying invocation. The
+authoritative commands the recipes wrap are:
 
 ```bash
 .venv/bin/python -m ruff check src/ tests/          # lint
@@ -56,10 +96,35 @@ security and container checks.
 
 ## Running Tests
 
-```bash
-# Full suite (949 tests, async; count includes parametrised expansions)
-.venv/bin/pytest
+The full collection is ~2502 tests (includes parametrised expansions
+and the 12 async engine-cycle tests tagged `@pytest.mark.integration`).
 
+```bash
+just test               # full suite
+just test-quick         # unit only, skip integration + browser trees
+just test-integration   # the 12 async engine-cycle cases under tests/test_e2e/
+just test-parallel      # pytest -n auto across CPUs (pytest-xdist)
+just pin                # characterisation tests only
+
+# Browser e2e (Playwright; needs a running Houndarr + mock *arr stack).
+# Not collected by default (norecursedirs skips tests/e2e_browser/);
+# invoke the tree explicitly:
+just test-browser chromium
+
+# Visual baseline capture / verify for the Phase 7b login + setup pins.
+# Both recipes orchestrate the mock *arr stack via
+# scripts/e2e_browser/capture_baselines.sh and run pytest inside a
+# Linux Playwright container so fonts match CI's ubuntu-latest renderer.
+# Re-capture is only required when login.html, setup.html, or the
+# auth CSS tokens change; see tests/e2e_browser/_screenshots/README.md.
+just capture-baselines   # produce + commit new PNG baselines
+just verify-baselines    # check committed baselines without re-capturing
+```
+
+For one-off invocations that don't have a `just` recipe (single test
+file, keyword filter, coverage report) call `pytest` directly:
+
+```bash
 # Single file
 .venv/bin/pytest tests/test_auth.py
 
@@ -76,11 +141,28 @@ security and container checks.
 .venv/bin/pytest --cov=houndarr --cov-report=term-missing
 ```
 
-**Pytest config** (from `pyproject.toml`):
+For one-off invocations without a `just` recipe:
 
-- `asyncio_mode = "auto"`: async tests run without manual event-loop setup
-- `asyncio_default_fixture_loop_scope = "function"`: each test gets its own loop
-- `addopts = "-q --tb=short"`: default quiet output with short tracebacks
+```bash
+.venv/bin/pytest tests/test_auth.py                                    # single file
+.venv/bin/pytest tests/test_auth.py::test_check_password_valid -v      # single test
+.venv/bin/pytest -k "csrf" -v                                          # keyword filter
+.venv/bin/pytest --cov=houndarr --cov-report=term-missing              # coverage
+```
+
+### Markers
+
+- `@pytest.mark.integration` — 12 async engine-cycle cases in
+  `tests/test_e2e/` plus 15 Playwright flows in `tests/e2e_browser/`
+  (browser tree excluded from default collection via `norecursedirs`;
+  `test_e2e/` is collected and filterable).
+- `@pytest.mark.pinning` — characterisation tests pinning current
+  behaviour before a refactor batch.  Unit-scope; runs in the default
+  suite.  Add one whenever a refactor needs a behavioural lock.
+
+Pytest config (`pyproject.toml`): `asyncio_mode = "auto"`,
+`asyncio_default_fixture_loop_scope = "function"`,
+`addopts = "-q --tb=short"`.
 
 ---
 
@@ -190,13 +272,26 @@ from houndarr.database import get_db
 | Constants | UPPER_SNAKE_CASE | `SESSION_MAX_AGE_SECONDS`, `SCHEMA_VERSION` |
 | Module-level state | `_leading_underscore` | `_db_path`, `_runtime_settings` |
 | Enums | `StrEnum`, lowercase values | `InstanceType.sonarr` |
-| Type aliases | PascalCase or Literal | `ItemType = Literal["episode", "movie", "album", "book", "whisparr_episode", "whisparr_v3_movie"]` |
+| Type aliases | PascalCase or Literal | `RunNowStatus = Literal["accepted", "not_found", "disabled"]` |
 
 ### Docstrings
 
 - Module-level docstring on every file that contains code
 - Google-style for functions: `Args:`, `Returns:`, `Raises:` sections
 - Test functions may use brief single-line docstrings
+
+### Comments
+
+Read [`docs/commenting-standard.md`](docs/commenting-standard.md) at least once
+per session before writing or editing code in this repo. It codifies the full
+commenting standard (per-language rules for Python, HTML/Jinja2, CSS, JS, SQL,
+YAML, shell, Markdown) plus the universal principles that apply across all of
+them. Agents and human contributors alike are expected to match what is there;
+reviewers will flag comments that do not.
+
+Core rule (full rationale in the standard): **comments explain _why_, code
+explains _what_**. If a comment just restates the code, delete it and rename
+the variable or function instead.
 
 ### Logging
 
@@ -238,10 +333,21 @@ No alternative logging libraries (structlog, loguru) are used.
 src/houndarr/
   __main__.py          # CLI entry point (Click), logging setup, uvicorn.run
   app.py               # create_app(), lifespan, middleware registration
-  auth.py              # AuthMiddleware, bcrypt, CSRF, rate limiter
+  auth/                # AuthMiddleware, bcrypt, CSRF, rate limiter (seam package)
+    password.py        # bcrypt verify / hash helpers
+    rate_limit.py      # in-memory login rate limiter
+    session.py         # signed session cookie encode / decode
+    setup.py           # first-run admin setup + password policy
+    csrf.py            # CSRF double-submit token rotation
+    proxy_auth.py      # reverse-proxy trust gate and header extraction
+    identity.py        # current-user resolution from session or proxy header
+    middleware.py      # AuthMiddleware dispatch (builtin vs proxy path)
   config.py            # AppSettings dataclass, get_settings() singleton
   crypto.py            # Fernet encrypt/decrypt, master key management
   database.py          # get_db() context manager, schema migrations
+  enums.py             # StrEnum consolidation (SearchKind, SearchAction, CycleTrigger, ItemType)
+  errors.py            # HoundarrError hierarchy (Client/Engine/Service/Route)
+  value_objects.py     # Frozen value objects shared across layers (ItemRef)
   clients/             # httpx-based *arr API clients
     base.py            # ArrClient ABC with _get()/_post() + raise_for_status() + get_queue_status()
     sonarr.py          # SonarrClient (episode/season search, v3 API)
@@ -251,11 +357,12 @@ src/houndarr/
     whisparr_v2.py     # WhisparrV2Client (Sonarr-based, episode/season search)
     whisparr_v3.py     # WhisparrV3Client (v3, Radarr-based, movie/scene search)
   engine/
-    candidates.py      # SearchCandidate dataclass, ItemType, date helpers
+    candidates.py      # SearchCandidate dataclass, ItemType re-export, date helpers
     search_loop.py     # run_instance_search(): unified search pipeline (missing/cutoff/upgrade passes, queue-backpressure gate)
     supervisor.py      # Supervisor: one asyncio.Task per enabled instance
     adapters/
       __init__.py      # AppAdapter dataclass, ADAPTERS registry, get_adapter()
+      protocols.py     # AppAdapterProto: runtime_checkable Protocol matching the AppAdapter shape
       sonarr.py        # Sonarr adapter: candidate conversion + dispatch
       radarr.py        # Radarr adapter: candidate conversion + dispatch
       lidarr.py        # Lidarr adapter: candidate conversion + dispatch
@@ -263,9 +370,15 @@ src/houndarr/
       whisparr_v2.py   # Whisparr v2 adapter: candidate conversion + dispatch
       whisparr_v3.py   # Whisparr v3 adapter: movie/scene candidate conversion + dispatch
   routes/
+    _htmx.py           # is_hx_request() shared helper for partial vs full renders
     pages.py           # Setup, Login, Dashboard, Logs, Settings page routes
-    settings.py        # Settings CRUD (instance add/edit/delete/toggle)
     health.py          # GET /api/health (Docker HEALTHCHECK)
+    settings/          # Settings surface split by concern
+      __init__.py      # composes the sub-routers into a single settings_router
+      _helpers.py      # template render, client build, connection check, validators
+      page.py          # GET /settings
+      account.py       # POST /settings/account/password
+      instances.py     # /settings/instances/* (CRUD, test-connection, toggle)
     api/
       logs.py          # GET /api/logs (JSON, with cursor-based pagination)
       status.py        # GET /api/status (JSON, dashboard polling)
@@ -277,15 +390,44 @@ src/houndarr/
 
 ### Key patterns
 
-- **Database:** SQLite via aiosqlite; schema version 9; `get_db()` async
+- **Database:** SQLite via aiosqlite; schema version 13; `get_db()` async
   context manager opens a fresh connection per call (FKs enabled per
   connection; WAL mode set once in `init_db()`)
 - **Config:** `AppSettings` is a plain dataclass (not Pydantic); `get_settings()`
-  is a lazy singleton
+  is a lazy singleton. Pydantic is used only at the *arr wire boundary
+  (`src/houndarr/clients/_wire_models/`), not for internal domain models or
+  config
+- **Wire models:** every *arr HTTP response is validated with a Pydantic
+  model from the `clients/_wire_models/` package before it reaches a parser.
+  `PaginatedResponse[T]` (generic, PEP 695 syntax) covers the shared
+  `/wanted/*` envelope; `SystemStatus` and `QueueStatus` back
+  `ArrClient.ping()` and `ArrClient.get_queue_status()`; per-app
+  `*WantedEpisode` / `*WantedMovie` / `*WantedAlbum` / `*WantedBook`
+  and `*LibraryEpisode` / `*LibraryMovie` / `*LibraryAlbum` / `*LibraryBook`
+  models name the record shapes.  `ArrSeries` / `ArrArtist` / `ArrAuthor`
+  type the parent-aggregate fetches.  All wire models extend an internal
+  `_ArrModel` that sets `populate_by_name=True` + `extra="ignore"` so
+  unknown fields from new *arr versions never raise.  Field names are
+  snake_case in Python and alias to the camelCase the APIs serialise.
+- **Domain models:** the parsed result types (`MissingEpisode`,
+  `LibraryMovie`, etc.) are frozen dataclasses, one per client file
+  next to the client that builds them.  Every frozen dataclass in the
+  codebase uses `slots=True`.  `Instance` composes seven frozen
+  sub-structs (`core`, `missing`, `cutoff`, `upgrade`, `schedule`,
+  `snapshot`, `timestamps`) and is itself frozen and slotted; callers
+  evolve it through `dataclasses.replace`.  `AppSettings` is the only
+  deliberately-mutable dataclass (env overrides applied in-place on
+  the lazy singleton).
 - **Encryption:** Master key in `request.app.state.master_key`; passed
   explicitly to service functions as `master_key=` kwarg; never imported globally
 - **Auth:** Global `AuthMiddleware` (Starlette `BaseHTTPMiddleware`) handles
-  session validation and CSRF enforcement; no per-route auth decorators
+  session validation and CSRF enforcement; no per-route auth decorators.
+  Proxy-auth trust and header reads flow through two primitives in
+  `auth.py`: `_is_trusted_proxy(request)` (IP gate) and
+  `_extract_proxy_username(request)` (header read, assumes trust
+  already verified).  The middleware's `_dispatch_proxy` and the
+  standalone `_validate_proxy_auth` both compose these so the gate
+  logic lives in one place.
 - **HTMX:** SPA-like shell navigation; nav links use `hx-target="#app-content"`
   with `hx-swap="innerHTML"` and `hx-push-url="true"`. Routes check
   `is_hx_request(request)` from `routes/_htmx.py` and return either partial
@@ -295,39 +437,26 @@ src/houndarr/
 - **search_log:** Every search attempt writes a row with action
   `searched`/`skipped`/`error`/`info`
 
-### Database schema (SQLite, schema version 9)
+### Database schema (SQLite)
 
 | Table | Purpose | Key constraints |
 |-------|---------|-----------------|
 | `settings` | Key-value config store | `key TEXT PK` |
-| `instances` | *arr instance configs | `type CHECK IN ('radarr','sonarr','lidarr','readarr','whisparr_v2','whisparr_v3')`; per-type `*_search_mode` columns with CHECK constraints; `post_release_grace_hrs` (default 6); `queue_limit` (default 0); `upgrade_enabled` (default 0) with per-type `upgrade_*_search_mode`, `upgrade_batch_size`, `upgrade_cooldown_days`, `upgrade_hourly_cap`, `upgrade_item_offset`, `upgrade_series_offset` columns; `missing_page_offset` (default 1), `cutoff_page_offset` (default 1) for page-rotation across cycles |
-| `cooldowns` | Per-item search cooldown tracking | `instance_id FK→instances ON DELETE CASCADE`; `UNIQUE(instance_id, item_id, item_type)` |
-| `search_log` | Audit trail for every search cycle | `instance_id FK→instances ON DELETE SET NULL`; `action CHECK IN ('searched','skipped','error','info')` |
+| `instances` | *arr instance configs | `type CHECK IN ('radarr','sonarr','lidarr','readarr','whisparr_v2','whisparr_v3')`; many policy columns with CHECK constraints; `monitored_total` / `unreleased_count` / `snapshot_refreshed_at` populated by the supervisor's snapshot refresh task |
+| `cooldowns` | Per-item search cooldown tracking | `instance_id FK→instances ON DELETE CASCADE`; `UNIQUE(instance_id, item_id, item_type)`; `search_kind CHECK IN ('missing','cutoff','upgrade')` (v15) |
+| `search_log` | Audit trail | `instance_id FK→instances ON DELETE SET NULL`; `action CHECK IN ('searched','skipped','error','info')` |
 
-Full DDL, column definitions, indexes, and migrations (`_migrate_to_v2`
-through `_migrate_to_v9`) are in `src/houndarr/database.py`. Bump
-`SCHEMA_VERSION` when adding new migrations.
+Full DDL and migrations live in `src/houndarr/database.py`. Bump
+`SCHEMA_VERSION` and add a `_migrate_to_vN` when changing schema.
 
 ### *arr API reference (local)
 
-Full upstream OpenAPI specs are vendored locally and kept current:
-
-- `docs/api/sonarr_openapi.json`: Sonarr v3 API (OpenAPI 3.0.1)
-- `docs/api/radarr_openapi.json`: Radarr v3 API (OpenAPI 3.0.4)
-- `docs/api/whisparr_v2_openapi.json`: Whisparr v2 API (Sonarr-based, OpenAPI 3.0.1)
-- `docs/api/whisparr_v3_openapi.json`: Whisparr v3 API (Radarr-based, OpenAPI 3.0.0)
-- `docs/api/lidarr_openapi.json`: Lidarr v1 API (OpenAPI 3.0.4)
-- `docs/api/readarr_openapi.json`: Readarr v1 API (OpenAPI 3.0.1)
-
-**Use these as the source of truth** when modifying or creating *arr client
-code. They document every endpoint, parameter, request body, and response
-schema. See `docs/api/README.md` for usage guidelines.
-
-All six specs are actively used by their respective clients in `clients/`.
-
-**Freshness:** `api-snapshot-refresh.yml` auto-fetches all six upstream
-specs weekly (Monday 10:00 UTC) and opens a PR if changed; local specs
-are never more than one week stale.
+Full upstream OpenAPI specs vendored under `docs/api/` (one per app:
+sonarr, radarr, whisparr_v2, whisparr_v3, lidarr, readarr).
+**Source of truth** when touching `clients/` code; see
+`docs/api/README.md`.  Refreshed weekly (Mon 10:00 UTC) by
+`api-snapshot-refresh.yml`, so specs are never more than a week
+stale.
 
 ---
 
@@ -405,6 +534,126 @@ Current CSRF exemptions: `POST /logout`, `/login`, `/setup`.
 The `test_settings` fixture resets `_auth._serializer`,
 `_auth._setup_complete`, and `_auth._login_attempts` so auth state does
 not bleed between tests.
+
+---
+
+## Verifying Claims About Algorithms
+
+Before modifying search-engine logic, scheduling, randomisation, ordering,
+distribution, or any code where probability or stateful iteration governs
+behaviour, verify the claim empirically and analytically first. Most
+reported "bugs" in this class turn out to be sample noise, observation
+bias, or misreadings of timing-dependent state, and shipping a fix for a
+non-bug introduces real risk for no real gain.
+
+### When this rule fires
+
+Apply this workflow whenever a user, a code review, or another AI surfaces
+a claim along the lines of:
+
+- "X picks the wrong page / item / branch"
+- "Y is biased / unfair / skewed toward Z"
+- "Random does not feel random"
+- "The cycle order is broken"
+- "We are searching the same things over and over"
+
+It does not apply to clear logic bugs, typos, or behaviour-change
+requests. The trigger is specifically: claims about probabilistic or
+distribution-shaped behaviour where the right answer is a measured
+histogram, not a code reading.
+
+### Required workflow
+
+1. Reproduce the algorithm in isolation against `tests/mock_arr/`, not
+   against the live test instances or short-window log dumps. The live
+   test *arrs hold tens of records, which is far below the sample size
+   needed to distinguish bias from variance, and live state (cooldowns,
+   hourly caps, *arr-side sort orders) confounds the measurement.
+2. Derive analytically what each page, item, or branch's probability
+   should be under the current code. Read the loop, write the math
+   down, and predict the distribution shape before running anything.
+   "I think it should be uniform" is not a prediction; "uniform with
+   chi-square below 16.92 at df=9" is.
+3. Run hundreds of cycles through `tests/mock_arr/probe_distribution.py`
+   or a similar probe modelled on it. Compute chi-square, max/min
+   ratio, and per-bucket standard deviation. Compare against the
+   analytical prediction and against the 5% chi-square critical value
+   at `df = N - 1`.
+4. Decide on evidence. If the empirical result agrees with the
+   prediction and the chi-square lands below the critical value, the
+   claim is wrong. Document the finding, reference the probe output,
+   and close the investigation. If the result confirms real bias,
+   scope the fix to the smallest change that closes the measured gap,
+   then re-run the probe to prove the gap is gone.
+
+### Tooling to use
+
+- `just mock-arr port=PORT items=N seed=S` launches the seeded
+  multi-app mock server with configurable item counts and a
+  deterministic seed; identical seeds produce byte-identical responses.
+- `.venv/bin/python -m tests.mock_arr.probe_distribution` boots the
+  mock in-process, drives the production `run_instance_search` for
+  many cycles across a sweep of library sizes, and reports per-cycle
+  start-page distributions plus full visit histograms. Use it as the
+  template for any new programmatic probe.
+- The mock exposes `GET /__page_log__/{app}` and
+  `GET /__commands__/{app}` for ground-truth request and dispatch
+  records, plus `POST /__reset__/{app}` to clear them between
+  configurations.
+- For statistical-power-bound questions (100k+ trials), a short
+  pure-Python simulation of just the algorithm beats running through
+  HTTP. Use it when the measurement is about the math, not the
+  integration.
+
+### What not to do
+
+- Do not treat a short-window dev-DB histogram (a few hours, dozens
+  of cycles, a handful of items) as evidence of algorithmic bias.
+  Cooldown phase, *arr-side sort order, and small-sample variance
+  dominate that signal. The math you owe is a many-cycle distribution
+  against a predicted shape.
+- Do not adopt an external diagnostic write-up without re-deriving
+  the math yourself. Direction (page 1 vs page N) and magnitude
+  (1.5x vs 5x) routinely invert in second-hand summaries of
+  probabilistic algorithms, and shipping a fix for an inverted claim
+  ships a regression.
+- Do not start coding because the claim is plausible. Plausibility is
+  not evidence. The bar is a reproducible measurement that disagrees
+  with the predicted distribution by more than chance.
+
+### Closing the loop
+
+When measurement contradicts the claim, the writeup is the engineering
+contribution. Reference the probe output, state the measured statistics,
+explain what the original observation was actually picking up
+(cooldown saturation, recency effects, sort-order interaction, sample
+noise), and close the discussion. A correct "no change required" is a
+successful task, not a non-result.
+
+### Known emergent behaviours (already measured)
+
+These are real but minor effects that have been verified by probe and
+deliberately left alone. Do not re-investigate them unless the
+operating point changes or a user reports a concrete regression.
+
+- Partial-last-page over-selection on missing/cutoff under random
+  search order. When the engine's `page_size` does not divide
+  `totalRecords` evenly, items on the (short) last page are drained
+  every visit because the engine dispatches up to `batch_size` items
+  per page. Measured at most 2x attention skew for the 1-9 items on
+  the last page at default settings (batch=1, pageSize=10) and 4x in
+  contrived configurations (batch=5, pageSize=20). Affects a small
+  slice of the backlog; the only clean fix is a virtual flat-index
+  draw which is a substantial redesign of `_run_search_pass`. Probe:
+  `tests/mock_arr/probe_cooldown.py`.
+- Sonarr / Whisparr v2 windowed-rotation coverage time. The upgrade
+  pass visits 5 series per cycle; full-library coverage takes
+  approximately `ceil(eligible_episodes * H / batch)` cycles where H
+  is the harmonic-coverage factor. Measured 91% theoretical and
+  85-89% empirical coverage at 60 cycles with batch=5 on 50 series.
+  This is the intentional trade-off versus hammering one series with
+  a single huge *arr fetch. Probe:
+  `tests/mock_arr/probe_upgrade_coverage.py`.
 
 ---
 
@@ -530,6 +779,15 @@ Level-4 `####` subheadings may group items within `###` sections for major
 releases.
 
 **Bullet rules:**
+- Every bullet must be justified by a PR-body sentence, a diff fragment,
+  or a source `file:line`. Do not draft from PR titles, commit messages,
+  or memory alone. The verification protocol lives in
+  `.claude/commands/bump.md` §3b; skipping it is what shipped the
+  inaccurate v1.9.0 bullets that had to be corrected in #420.
+- Adopt the PR author's vocabulary for nuance. If the PR body says
+  "new default for fresh installs; existing instances keep their prior
+  behaviour," the bullet says "new default for newly added instances,"
+  not "new default."
 - One sentence per bullet; no multi-line prose
 - Lead with user-facing impact, not implementation details
 - End with `(#N)` issue/PR reference

@@ -18,6 +18,18 @@ toggle, caps-lock indicator, strength meter, and confirm-password
 match indicator you see on the `/login` and `/setup` pages, because
 they share one module.
 
+On success, the tab reloads. That is deliberate: the session
+signing secret is rotated at the same time the password is written,
+which invalidates every cookie signed with the old secret (other
+tabs, other devices, a session you suspect was copied). The tab
+that made the change is reissued a fresh cookie before the reload
+so it stays signed in without any action from you.
+
+The current-password check shares the same IP-scoped bucket as
+`/login`. Five wrong entries in a minute return HTTP 429 until the
+window rolls off, so a session-compromised attacker cannot
+brute-force the current password through this form.
+
 Behavior in proxy / SSO mode: the password form is hidden. Instead you
 see a read-only "Signed in as `<username>`" card that echoes whatever
 username your upstream proxy forwarded on the request. Credential
@@ -27,26 +39,20 @@ auth](/docs/guides/sso-proxy-auth).
 
 ## Updates
 
-Controls for the release check and the What's new modal:
+Two controls for the What's new modal and the changelog:
 
-- **Automatically check for new releases** toggle. When enabled,
-  Houndarr polls GitHub Releases once every 24 hours for the latest
-  stable tag. The result renders inline under the toggle. Off on
-  every install, so nothing reaches GitHub until you flip it on.
-- **Check now** button. Forces an immediate poll regardless of the
-  toggle state. Useful for one-off checks without enabling the
-  background poll.
 - **Show changelog after each update** toggle. When enabled, the
-  What's new modal opens automatically the first time you load the
-  Settings or Dashboard page after a version bump. When disabled,
-  the modal stays silent and the last-seen version is silently
-  advanced on every load so re-enabling later does not surface a
-  backlog.
-- **What's new** button. Opens the modal on demand, useful when you
-  want to re-read what shipped without waiting for the next release.
-- **Latest on GitHub ↗** link. Opens `CHANGELOG.md` on GitHub so the
-  remote view is always one click away, independent of the image
-  version you are on.
+  modal opens automatically the first time you load the Settings or
+  Dashboard page after a version bump. When disabled, the modal stays
+  silent and the last-seen version is silently advanced on every load
+  so re-enabling later does not surface a backlog.
+- **Show last changelog** button. Opens the modal on demand, useful
+  when you want to re-read what shipped without waiting for the next
+  release.
+- **View full CHANGELOG.md →** link. Navigates to a dedicated page
+  that renders every release block bundled with the build, with the
+  same markdown vocabulary (inline code, bold, links, issue refs) as
+  the modal.
 
 ## Maintenance
 
@@ -61,7 +67,7 @@ Reverts every instance's policy columns to defaults:
 - Post-release grace hours and queue backpressure limit
 - Cutoff search settings (enabled / batch / cooldown / cap)
 - Upgrade search settings (enabled / batch / cooldown / cap)
-- Per-app search modes (Sonarr / Lidarr / Readarr / Whisparr v2)
+- Per-app search modes (Sonarr / Lidarr / Readarr / Whisparr)
 - Allowed search window and search order
 - Pagination cursors (missing, cutoff) and upgrade-pool offsets
 
@@ -106,9 +112,14 @@ The confirmation flow demands two factors:
 | Built-in | Type `RESET` | Current admin password |
 | Proxy / SSO | Type `RESET` | Type your proxy username (echoed from the auth header) |
 
-A failure during the in-process re-init (extremely rare) exits the
-container so your orchestrator can restart it. The database and master
-key are already deleted at that point, so on boot the empty data
+In built-in mode the password check shares the IP-scoped bucket used
+by `/login`. Five wrong entries in a minute lock the form out with
+HTTP 429 until the window clears, so a stolen session cookie cannot
+be used to brute-force its way into a destructive action.
+
+A failure during the in-process re-init (extremely rare) drops a
+`.factory-reset-pending` sentinel in the data directory and exits the
+container so your orchestrator can restart it. On boot the empty data
 directory triggers the normal first-run flow.
 
 Because the database is wiped, the only audit trail for a factory
