@@ -4,9 +4,12 @@
 /* Design tokens live in tokens.css; this file consumes them.                 */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
-/* ── Scrollbar gutter ───────────────────────────────────────────────────── */
+/* ── Scrollbar gutter ─────────────────────────────────────────────────────
+   `stable` (not `both-edges`) avoids a known Chromium bug and keeps the
+   reserved strip on the inline-end edge only. The atmosphere painted on
+   <html> below fills that strip so it never reads as an empty gap. */
 html {
-  scrollbar-gutter: stable both-edges;
+  scrollbar-gutter: stable;
 }
 
 /* ── Global content scale ────────────────────────────────────────────────
@@ -401,6 +404,7 @@ a:focus-visible,
 button:focus-visible {
   text-decoration: none;
 }
+
 
 /* ── Nav atmospheric glow ───────────────────────────────────────────────── */
 body > nav {

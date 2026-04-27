@@ -7,11 +7,55 @@ errors are caught by an autouse fixture in ``conftest.py``.
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from contextlib import suppress
+from pathlib import Path
 
+import pytest
 from playwright.sync_api import Locator, Page, expect
+
+_SCREENSHOTS_DIR = Path(__file__).resolve().parent / "_screenshots"
+
+# Admin credentials used by the self-healing setup-page capture below.
+# Values mirror ``tests/e2e_browser/conftest.py:23-24`` so the same
+# env-var overrides apply when CI or a maintainer re-keys the admin.
+_ADMIN_USER = os.environ.get("HOUNDARR_E2E_USER", "admin")
+_ADMIN_PASS = os.environ.get("HOUNDARR_E2E_PASS", "CITestPass1!")
+
+
+def _assert_screenshot(page: Page, name: str) -> None:
+    """Byte-compare a page screenshot against the committed baseline.
+
+    Baselines live at ``tests/e2e_browser/_screenshots/<name>``.  When the
+    ``HOUNDARR_E2E_CAPTURE=1`` environment variable is set (the
+    capture script sets it on the first pytest invocation pass), the
+    current screenshot is written to disk instead of compared.  On a
+    verification run the env var stays unset and any pixel diff fails
+    the test.  On mismatch, the actual bytes are saved alongside as
+    ``<name>.actual.png`` so the maintainer can open both files in any
+    image viewer and eyeball the delta before deciding whether to
+    re-capture.
+    """
+    path = _SCREENSHOTS_DIR / name
+    actual = page.screenshot(full_page=True, type="png")
+    if os.environ.get("HOUNDARR_E2E_CAPTURE") == "1":
+        _SCREENSHOTS_DIR.mkdir(exist_ok=True)
+        path.write_bytes(actual)
+        return
+    if not path.exists():
+        raise AssertionError(
+            f"baseline missing: {path}.  Run `just capture-baselines` to create it."
+        )
+    expected = path.read_bytes()
+    if actual == expected:
+        return
+    actual_path = path.with_suffix(".actual.png")
+    actual_path.write_bytes(actual)
+    raise AssertionError(
+        f"pixel diff vs {path.name}; actual saved to {actual_path.name} for inspection"
+    )
 
 
 def _wait_for_connection_ui_idle(page: Page) -> None:
@@ -673,3 +717,144 @@ def test_changelog_preferences_switch_rolls_back_on_error(
         )
     finally:
         page.unroute(pattern)
+
+
+# ---------------------------------------------------------------------------
+# Visual baselines for /login and /setup
+#
+# Phase 7a of the final refactor wave routed three hardcoded rgba values
+# in auth-fields.css through named tokens.  The computed rgba on every
+# consuming element is byte-equal to the pre-refactor literal, so the
+# rendered output of /login and /setup is pixel-identical to pre-7a.
+# These two tests capture pytest-playwright snapshot baselines; first
+# capture runs via ``just capture-baselines``, which drives
+# ``scripts/e2e_browser/capture_baselines.sh`` inside a Linux Playwright
+# container so the PNGs match CI's ubuntu-latest font rendering.
+# ``just verify-baselines`` and ``just test-browser chromium`` compare
+# the live render against the committed baseline on every run.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_login_page_visual(logged_in_page: Page, houndarr_url: str) -> None:
+    """Pixel-compare the /login page after the Phase 7a token routing.
+
+    ``logged_in_page`` puts the browser through setup + login, so by
+    the time we reach here the admin account exists.  Drop the auth
+    cookies client-side (``/logout`` only accepts POST, so
+    ``page.goto('/logout')`` would trigger a 405 under HTTP GET) and
+    navigate to ``/login`` for the capture.
+    """
+    page = logged_in_page
+    page.context.clear_cookies()
+    page.goto(f"{houndarr_url}/login")
+    page.wait_for_load_state("networkidle")
+    _assert_screenshot(page, "login_page_visual.png")
+
+
+def _ensure_pre_setup_state(page: Page, base_url: str) -> None:
+    """Bring Houndarr to a pre-admin state, regardless of entry condition.
+
+    The CI browser-e2e workflow creates the admin account via
+    ``POST /setup`` before pytest runs, so ``test_setup_page_visual``
+    can reach here in two distinct states:
+
+    1. Admin already exists: ``GET /setup`` redirects to ``/login``
+       (see ``src/houndarr/routes/pages.py:64``).  We need to wipe
+       the admin state before we can capture the pre-setup form.
+    2. Admin does not exist: ``/setup`` renders directly.  No action
+       needed (the local ``just capture-baselines`` path).
+
+    When state 1, drive the factory-reset flow through the admin API:
+    log in via UI to seed the session + CSRF cookie, then POST
+    ``/settings/admin/factory-reset`` with the confirm phrase and
+    admin password.  Factory reset wipes the database and master key,
+    drops every auth cache, and leaves Houndarr in the pre-admin
+    state we need.  Clear cookies so the old session cookie (now
+    signed against a rotated secret) does not linger.
+    """
+    page.goto(f"{base_url}/setup", wait_until="networkidle")
+    if page.url.rstrip("/").endswith("/setup"):
+        return  # already pre-admin
+
+    # Admin exists: log in, then call factory-reset via the API.
+    page.goto(f"{base_url}/login", wait_until="networkidle")
+    page.get_by_role("textbox", name="Username").fill(_ADMIN_USER)
+    page.get_by_role("textbox", name="Password").fill(_ADMIN_PASS)
+    page.get_by_role("button", name="Sign In").click()
+    page.wait_for_url(re.compile(rf"^{re.escape(base_url)}/?$"))
+
+    csrf = next(
+        (c.get("value", "") for c in page.context.cookies() if c.get("name") == "houndarr_csrf"),
+        "",
+    )
+    assert csrf, "houndarr_csrf cookie missing after login"
+
+    response = page.request.post(
+        f"{base_url}/settings/admin/factory-reset",
+        form={
+            "confirm_phrase": "RESET",
+            "current_password": _ADMIN_PASS,
+            "csrf_token": csrf,
+        },
+        headers={"X-CSRF-Token": csrf},
+        max_redirects=0,
+    )
+    assert response.status in (200, 303), (
+        f"factory-reset returned {response.status}: {response.text()}"
+    )
+    page.context.clear_cookies()
+
+
+def _recreate_admin(page: Page, base_url: str) -> None:
+    """Seed the admin account via ``POST /setup``.
+
+    Called after the pre-setup capture so subsequent tests'
+    ``logged_in_page`` fixture (which assumes admin exists) continues
+    to work.  Matches the CI workflow's admin-creation curl exactly.
+    """
+    response = page.request.post(
+        f"{base_url}/setup",
+        form={
+            "username": _ADMIN_USER,
+            "password": _ADMIN_PASS,
+            "password_confirm": _ADMIN_PASS,
+        },
+        max_redirects=0,
+    )
+    assert response.status in (200, 303), (
+        f"/setup re-seed returned {response.status}: {response.text()}"
+    )
+
+
+@pytest.mark.integration
+def test_setup_page_visual(page: Page, browser, houndarr_url: str) -> None:
+    """Pixel-compare the /setup page after the Phase 7a token routing.
+
+    Self-healing: works whether the stack entered in a pre-admin state
+    (``just capture-baselines`` fresh-data path) or with admin already
+    seeded (``.github/workflows/browser-e2e.yml`` which curls
+    ``POST /setup`` before pytest).  In the admin-seeded case the test
+    first factory-resets via the admin API, captures ``/setup``, then
+    re-seeds admin so later tests' ``logged_in_page`` fixture finds
+    the credentials it expects.
+
+    The final capture opens a fresh browser context so the screenshot
+    is byte-equal regardless of prior navigation state (caret, focus,
+    font cache, HTMX listeners).  The baseline was captured on a fresh
+    pytest context; capturing on the same context that just drove
+    login + factory-reset produces a small but consistent pixel diff
+    from residual browser state, which would fail the byte-equal
+    assertion even though the HTML is identical.
+    """
+    _ensure_pre_setup_state(page, houndarr_url)
+    capture_context = browser.new_context()
+    try:
+        capture_page = capture_context.new_page()
+        capture_page.goto(f"{houndarr_url}/setup", wait_until="networkidle")
+        _assert_screenshot(capture_page, "setup_page_visual.png")
+    finally:
+        capture_context.close()
+        # Restore admin even if the assertion failed so the rest of
+        # the suite is not stranded in a pre-setup state.
+        _recreate_admin(page, houndarr_url)
