@@ -40,6 +40,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from pathlib import Path
@@ -152,6 +153,38 @@ def _parse_bool_env(name: str, default: bool = False) -> bool:
     return default
 
 
+_DEFAULT_UPDATE_CHECK_REPO = "av1155/houndarr"
+_UPDATE_CHECK_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+def _parse_update_check_repo(raw: str) -> str:
+    """Validate HOUNDARR_UPDATE_CHECK_REPO; fall back to the default on junk.
+
+    The value is interpolated into ``https://api.github.com/repos/{repo}/...``
+    so the GitHub URL parser already keeps the host pinned. This guard is
+    defence in depth: every :func:`get_settings` call that reads env
+    (the no-pin fallback, including the no-override branch of
+    :func:`bootstrap_settings`) flows through here, so a typo (missing
+    slash, accidental query string, absolute URL) is caught before a
+    garbled request hits the GitHub API. CLI overrides bypass this path
+    entirely because :func:`bootstrap_settings` constructs ``AppSettings``
+    from kwargs directly; ``HOUNDARR_UPDATE_CHECK_REPO`` only affects
+    the env-fallback callers (scripts, tests, and any caller that
+    invokes :func:`bootstrap_settings` with no overrides).
+    """
+    value = raw.strip()
+    if not value:
+        return _DEFAULT_UPDATE_CHECK_REPO
+    if not _UPDATE_CHECK_REPO_RE.match(value):
+        logger.warning(
+            "HOUNDARR_UPDATE_CHECK_REPO=%r is not a valid owner/repo slug; falling back to %r",
+            value,
+            _DEFAULT_UPDATE_CHECK_REPO,
+        )
+        return _DEFAULT_UPDATE_CHECK_REPO
+    return value
+
+
 def get_settings() -> AppSettings:
     """Return current runtime settings, falling back to defaults."""
     if _runtime_settings is not None:
@@ -167,6 +200,7 @@ def get_settings() -> AppSettings:
         trusted_proxies=os.environ.get("HOUNDARR_TRUSTED_PROXIES", ""),
         auth_mode=os.environ.get("HOUNDARR_AUTH_MODE", "builtin").lower(),
         auth_proxy_header=os.environ.get("HOUNDARR_AUTH_PROXY_HEADER", ""),
+        update_check_repo=os.environ.get("HOUNDARR_UPDATE_CHECK_REPO", "av1155/houndarr"),
     )
 
 
@@ -267,6 +301,11 @@ class AppSettings:
             username from the reverse proxy (e.g. ``Remote-User``).
             Required when ``auth_mode`` is ``proxy``.
             Corresponds to ``HOUNDARR_AUTH_PROXY_HEADER`` env var.
+        update_check_repo: ``owner/repo`` slug the update-check service
+            polls for the latest stable release. Defaults to the upstream
+            Houndarr repository; forks override via
+            ``HOUNDARR_UPDATE_CHECK_REPO`` so no code change is needed to
+            redirect the check at their own release stream.
     """
 
     data_dir: str = "/data"
@@ -279,6 +318,7 @@ class AppSettings:
     trusted_proxies: str = ""
     auth_mode: str = "builtin"
     auth_proxy_header: str = ""
+    update_check_repo: str = "av1155/houndarr"
 
     # Derived paths (computed from data_dir)
     db_path: Path = field(init=False)

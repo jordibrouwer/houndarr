@@ -2,11 +2,11 @@
 
 Four endpoints, all authenticated (handled by ``AuthMiddleware``):
 
-- ``GET  /settings/changelog/popup`` — returns the modal HTML partial if the
+- ``GET  /settings/changelog/popup`` returns the modal HTML partial if the
   running version is newer than ``changelog_last_seen_version`` and popups
   are not disabled; otherwise returns an empty placeholder div.  Supports
   ``?force=1`` to bypass the decision and always render (used by the
-  Settings page "Show last changelog" button).
+  Settings page "What's new" button).
 - ``POST /settings/changelog/dismiss`` — writes ``changelog_last_seen_version``
   to the running version.  Idempotent.
 - ``POST /settings/changelog/disable`` — writes the last-seen marker AND
@@ -31,7 +31,6 @@ from houndarr.database import get_setting, set_setting
 from houndarr.routes._templates import get_templates
 from houndarr.services.changelog import (
     ReleaseEntry,
-    get_changelog,
     releases_between,
     should_show,
 )
@@ -228,28 +227,3 @@ async def preferences(
     new_disabled = "0" if enabled == "on" else "1"
     await set_setting("changelog_popups_disabled", new_disabled)
     return Response(status_code=204)
-
-
-def _is_hx_request(request: Request) -> bool:
-    return request.headers.get("HX-Request") == "true"
-
-
-@router.get("/full", response_class=HTMLResponse)
-async def full(request: Request) -> HTMLResponse:
-    """Render every parsed release from ``CHANGELOG.md`` on its own page.
-
-    HX-aware: returns only the content partial when ``HX-Request: true``
-    so shell navigation swaps cleanly into ``#app-content``; returns the
-    full ``changelog_full.html`` wrapper otherwise.
-    """
-    releases = get_changelog()
-    template_name = (
-        "partials/pages/changelog_full_content.html"
-        if _is_hx_request(request)
-        else "changelog_full.html"
-    )
-    return get_templates().TemplateResponse(
-        request=request,
-        name=template_name,
-        context={"releases": releases, "version": __version__},
-    )

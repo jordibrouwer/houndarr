@@ -131,9 +131,13 @@ def test_settings_page_includes_changelog_section(app: TestClient) -> None:
     assert resp.status_code == 200
     assert b'id="admin-updates"' in resp.content
     assert b"Show changelog after each update" in resp.content
-    assert b"Show last changelog" in resp.content
-    assert b"View full CHANGELOG.md" in resp.content
-    # Fresh install defaults to enabled → checkbox checked.
+    assert b"Automatically check for new releases" in resp.content
+    assert b"What&#39;s new" in resp.content
+    # Second full-changelog surface (local /settings/changelog/full) was
+    # removed: GitHub is now the single source for the upstream view.
+    assert b"Latest on GitHub" in resp.content
+    assert b"View full CHANGELOG.md" not in resp.content
+    # Fresh install defaults to enabled for popups, disabled for update-check.
     assert b"checked" in resp.content
 
 
