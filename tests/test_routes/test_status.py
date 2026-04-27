@@ -466,28 +466,30 @@ def test_status_active_error_still_emitted_for_disabled_instance(app: TestClient
 def test_dashboard_template_filters_banner_on_disabled_instances() -> None:
     """Regression guard for the client-side alert filter.
 
-    ``renderAlert`` and the subheader's ``errored`` / on-patrol tally in
-    ``dashboard_content.html`` must each check ``enabled && active_error``
-    so disabling an instance silences the top-of-dashboard banner and
-    the "needs attention" callout.  Per-card pill + cooldown panel are
-    already guarded at their own call sites by ``!inst.enabled`` first.
+    ``renderAlert`` and ``renderSubheader`` in ``dashboard.js`` must
+    both route through ``failingInstances(instances)`` so disabling an
+    instance silences the top-of-dashboard banner AND the "needs
+    attention" callout through a single source of truth.  The shared
+    helper pins the ``enabled && active_error`` predicate in one place
+    so a new surface that needs the same filter cannot accidentally
+    drift from the banner's rules.
     """
     from pathlib import Path
 
-    template = (
-        Path(__file__).resolve().parents[2]
-        / "src"
-        / "houndarr"
-        / "templates"
-        / "partials"
-        / "pages"
-        / "dashboard_content.html"
+    script = (
+        Path(__file__).resolve().parents[2] / "src" / "houndarr" / "static" / "js" / "dashboard.js"
     ).read_text()
-    # Three inline-JS call sites: renderAlert filter, subheader `errored`
-    # find, subheader "on patrol" count.  Stricter than >=3 to keep the
-    # test honest if someone adds a fourth surface without also filtering.
-    assert template.count("i.enabled && i.active_error") == 3, (
-        "Expected 3 call sites filtering banner/subheader on enabled + active_error"
+    # Exactly one predicate: the helper is the only place the filter
+    # lives.  A second occurrence would mean someone re-inlined the
+    # check instead of calling failingInstances().
+    assert script.count("i.enabled && i.active_error") == 1, (
+        "Expected exactly one enabled+active_error predicate (inside failingInstances)"
+    )
+    # Helper must be called from both the banner and the subheader so
+    # the two surfaces agree on which instances are failing right now.
+    assert script.count("failingInstances(instances)") >= 2, (
+        "Expected failingInstances(instances) to be called from both "
+        "renderAlert and renderSubheader"
     )
 
 
@@ -574,6 +576,130 @@ def test_status_v2_recent_searches_last_7_days(app: TestClient) -> None:
     body = app.get("/api/status").json()
     labels = [row["item_label"] for row in body["recent_searches"]]
     assert labels == ["Fresh Show", "Older Show"]
+
+
+def test_status_v2_envelope_includes_budget_bar_fields(app: TestClient) -> None:
+    """Each instance carries the data the hourly budget bar needs.
+
+    `searches_last_hour` is the numerator (rolling 1-hour SUM of
+    dispatches).  `cutoff_hourly_cap` and `upgrade_hourly_cap` let
+    the dashboard sum the dominant-cap denominator without hitting
+    the DB again.
+    """
+    _login(app)
+    _create_instance(app)
+    body = app.get("/api/status").json()
+    row = body["instances"][0]
+    assert "searches_last_hour" in row
+    assert "cutoff_hourly_cap" in row
+    assert "upgrade_hourly_cap" in row
+    assert isinstance(row["searches_last_hour"], int)
+    assert isinstance(row["cutoff_hourly_cap"], int)
+    assert isinstance(row["upgrade_hourly_cap"], int)
+
+
+def test_status_v2_searches_last_hour_counts_only_recent(app: TestClient) -> None:
+    """The budget counter windows strictly to the last 60 minutes."""
+    _login(app)
+    iid = _create_instance(app)
+    now = datetime.now(UTC)
+    asyncio.run(
+        _seed_search_log(
+            [
+                (
+                    iid,
+                    201,
+                    "episode",
+                    "missing",
+                    "searched",
+                    None,
+                    "Fresh",
+                    None,
+                    (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                ),
+                (
+                    iid,
+                    202,
+                    "episode",
+                    "cutoff",
+                    "searched",
+                    None,
+                    "Also Fresh",
+                    None,
+                    (now - timedelta(minutes=45)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                ),
+                (
+                    iid,
+                    203,
+                    "episode",
+                    "missing",
+                    "searched",
+                    None,
+                    "Just Outside",
+                    None,
+                    (now - timedelta(minutes=65)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                ),
+            ]
+        )
+    )
+    body = app.get("/api/status").json()
+    row = body["instances"][0]
+    # Two rows are inside the 60-minute window (5m and 45m); the 65m row is out.
+    assert row["searches_last_hour"] == 2
+
+
+def test_status_v2_recent_searches_includes_search_kind(app: TestClient) -> None:
+    """Each recent-hunts row surfaces its pass kind so the dashboard can icon-tag it."""
+    _login(app)
+    iid = _create_instance(app)
+    now = datetime.now(UTC)
+    asyncio.run(
+        _seed_search_log(
+            [
+                (
+                    iid,
+                    101,
+                    "episode",
+                    "missing",
+                    "searched",
+                    None,
+                    "Missing Ep",
+                    None,
+                    (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                ),
+                (
+                    iid,
+                    102,
+                    "episode",
+                    "cutoff",
+                    "searched",
+                    None,
+                    "Cutoff Ep",
+                    None,
+                    (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                ),
+                (
+                    iid,
+                    103,
+                    "episode",
+                    "upgrade",
+                    "searched",
+                    None,
+                    "Upgrade Ep",
+                    None,
+                    (now - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                ),
+            ]
+        )
+    )
+    body = app.get("/api/status").json()
+    rows = body["recent_searches"]
+    # Newest-first ordering preserved, each row carries its search_kind.
+    assert [(r["item_label"], r["search_kind"]) for r in rows] == [
+        ("Missing Ep", "missing"),
+        ("Cutoff Ep", "cutoff"),
+        ("Upgrade Ep", "upgrade"),
+    ]
 
 
 def test_status_v2_recent_searches_limit_5(app: TestClient) -> None:

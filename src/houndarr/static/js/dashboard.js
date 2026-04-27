@@ -150,6 +150,14 @@ function initDashboardPage() {
       return `Patrol · ${mo} ${day} ${year} · ${hh}:${mm} ${tz || ''}`.trim();
     }
 
+    function failingInstances(instances) {
+      // Shared helper for renderSubheader + renderAlert so both parts
+      // of the dashboard header agree on which instances are "failing"
+      // right now.  Disabled instances opted out of patrol, so their
+      // stale error rows are excluded by design.
+      return instances.filter(function (i) { return i.enabled && i.active_error; });
+    }
+
     function renderSubheader(instances) {
       const eyebrow = formatPatrolEyebrow();
       if (instances.length === 0) {
@@ -161,14 +169,19 @@ function initDashboardPage() {
       }
       const total = instances.length;
       const active = instances.filter(function (i) { return i.enabled; }).length;
-      // Disabled instances are opted out of patrol, so they never count
-      // toward "needs attention" even if their last search_log row is an
-      // error.  renderAlert() filters the same way.
-      const errored = instances.find(function (i) { return i.enabled && i.active_error; });
+      const failing = failingInstances(instances);
       let sentence;
-      if (errored) {
-        const on = total - instances.filter(function (i) { return i.enabled && i.active_error; }).length;
-        sentence = `${on} of ${total} hounds on patrol. <span class="attn">${escHtml(errored.name)} needs attention.</span>`;
+      if (failing.length > 0) {
+        const on = total - failing.length;
+        // Singular: name the instance so the subheader reads naturally.
+        // Plural: switch to a count-based phrasing so the line length
+        // stays stable regardless of how many instances degraded at
+        // once (a five-instance outage should not push "needs
+        // attention" off the end of the viewport).
+        const attn = failing.length === 1
+          ? `${escHtml(failing[0].name)} needs attention.`
+          : `${failing.length} instances need attention.`;
+        sentence = `${on} of ${total} hounds on patrol. <span class="attn">${attn}</span>`;
       } else {
         const recent = instances
           .map(function (i) { return i.last_dispatch_at; })
@@ -212,27 +225,49 @@ function initDashboardPage() {
       return `${escHtml(before)}<span class="mono">${escHtml(url)}</span>${escHtml(after)}`;
     }
 
+    function renderAlertRow(inst) {
+      // One row inside the banner body per errored instance.  The meta
+      // ("N failures · last Xm ago") lives inline at the end of the
+      // sentence, immediately after the URL, so the eye reads the row
+      // as a single line with an inline timestamp instead of a two-
+      // column grid with right-aligned metadata.  renderAlertMessage
+      // continues to wrap any http(s):// URL in .mono so the URL keeps
+      // the red monospace accent.
+      const err = inst.active_error || {};
+      const failures = toNumber(err.failures_count);
+      const failText = failures > 0
+        ? `${failures} failure${failures === 1 ? '' : 's'}`
+        : 'Connection error';
+      const whenAgo = formatTimeAgo(err.timestamp);
+      const msg = err.message || '';
+      return `
+    <li class="dash-alert__row">
+      <strong>${escHtml(inst.name)}</strong><span class="muted">:</span>
+      ${renderAlertMessage(msg)}
+      <span class="dash-alert__row-meta"><span class="muted dash-alert__row-meta-lead">·</span> ${escHtml(failText)} <span class="muted">·</span> last ${escHtml(whenAgo || 'just now')}</span>
+    </li>`;
+    }
+
     function renderAlert(instances) {
-      // Only enabled instances trigger the top banner; a disabled instance
-      // has been explicitly opted out of patrol, so stale error rows
-      // should not keep shouting at the user.
-      const failing = instances.filter(function (i) { return i.enabled && i.active_error; });
+      const failing = failingInstances(instances);
       if (failing.length === 0) return '';
-      const inst = failing[0];
-      const failures = toNumber(inst.active_error && inst.active_error.failures_count);
-      const failText = failures > 0 ? `${failures} failure${failures === 1 ? '' : 's'}` : 'Connection error';
-      const whenAgo = inst.active_error ? formatTimeAgo(inst.active_error.timestamp) : '';
-      const msg = (inst.active_error && inst.active_error.message) || '';
-      const logsHref = `/logs?instance_id=${encodeURIComponent(inst.id)}&action=error`;
+      // One ?instance_id=N per failing instance so the "View logs"
+      // deep link opens the logs page with all errored instances
+      // pre-selected in the multi-select filter.  FastAPI reads the
+      // repeated query param as a list and the /logs SSR route pre-
+      // checks the matching checkboxes in the filter dropdown.
+      const qs = failing
+        .map((i) => `instance_id=${encodeURIComponent(i.id)}`)
+        .join('&');
+      const logsHref = `/logs?${qs}&action=error`;
+      const rows = failing.map(renderAlertRow).join('');
       return `
 <section class="dash-alert" role="alert">
   <span class="dash-alert__icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
   <div class="dash-alert__body">
     <p class="dash-alert__head">Degraded · ${failing.length} instance${failing.length === 1 ? '' : 's'} offline</p>
-    <p class="dash-alert__text">
-      <strong>${escHtml(inst.name)}</strong><span class="muted">:</span>
-      ${renderAlertMessage(msg)}<span class="dash-alert__meta"><span class="muted dash-alert__meta-lead">&nbsp;·&nbsp;</span>${escHtml(failText)} <span class="muted">·</span> last ${escHtml(whenAgo || 'just now')}</span>
-    </p>
+    <ul class="dash-alert__list">${rows}
+    </ul>
   </div>
   <a class="dash-alert__link" href="${logsHref}"
      hx-get="${logsHref}" hx-target="#app-content" hx-swap="innerHTML" hx-push-url="true">View logs${ARROW_RIGHT_ICON}</a>
@@ -251,34 +286,61 @@ function initDashboardPage() {
       });
       const totals = activeInstances.reduce(function (acc, i) {
         const bd = i.cooldown_breakdown || { missing: 0, cutoff: 0, upgrade: 0 };
-        acc.monitored += toNumber(i.monitored_total);
+        const monI = toNumber(i.monitored_total);
+        const gatedI = toNumber(bd.missing) + toNumber(bd.cutoff);
+        const unrI = toNumber(i.unreleased_count);
+        acc.monitored += monI;
         acc.cooldown  += toNumber(bd.missing);
         acc.cutoffCd  += toNumber(bd.cutoff);
         acc.upgradeCd += toNumber(bd.upgrade);
-        acc.unreleased += toNumber(i.unreleased_count);
+        acc.unreleased += unrI;
+        // Sum per-instance Eligibles (each already clamped at zero)
+        // so one instance's stale-cooldown overshoot cannot drain
+        // another instance's positive contribution.  Computing
+        // max(0, totals.monitored - totals.gated - totals.unreleased)
+        // at the fleet scope silently drops a genuine positive
+        // whenever any instance's (gated + unreleased) exceeds its
+        // monitored_total: the overshoot turns the fleet total
+        // negative, max clamps to 0, and the rollup headline
+        // contradicts the sum of the cards below it.  Cooldown
+        // accounting can run above monitored_total because rows
+        // outlive the wanted item (downloads, unmonitors, cutoff-met
+        // transitions) and there is no current lifecycle cleanup; a
+        // proper reconcile is a separate commit.
+        acc.eligible += Math.max(0, monI - gatedI - unrI);
         return acc;
-      }, { monitored: 0, cooldown: 0, cutoffCd: 0, upgradeCd: 0, unreleased: 0 });
+      }, { monitored: 0, cooldown: 0, cutoffCd: 0, upgradeCd: 0, unreleased: 0, eligible: 0 });
       // Upgrade cooldowns sit outside monitored_total (the upgrade pool is
       // has_file + cutoff_met; those items are neither in /wanted/missing
-      // nor /wanted/cutoff). Subtracting upgradeCd here would under-report
-      // Eligible by exactly the upgrade-cooldown count. Keep the violet
-      // bar segment + legend entry to surface upgrade activity separately.
+      // nor /wanted/cutoff), so the bar segment + legend entry surface
+      // upgrade activity separately.
       const gated = totals.cooldown + totals.cutoffCd;
-      const eligible = Math.max(0, totals.monitored - gated - totals.unreleased);
+      const eligible = totals.eligible;
+      // Eyebrow count equals the sum of every segment rendered below it
+      // so bar width and eyebrow number visually agree.  Labeling this
+      // "items tracked" rather than "monitored" avoids overloading the
+      // *arr term: upgrade-pool items are tracked by Houndarr but are
+      // not part of each *arr's monitored_total.
+      const barTotal =
+        eligible
+        + totals.cooldown
+        + totals.cutoffCd
+        + totals.upgradeCd
+        + totals.unreleased;
       const ariaLabel = `${eligible} eligible, ${totals.cooldown} cooldown, ${totals.cutoffCd} cutoff cooldown, ${totals.upgradeCd} upgrade cooldown, ${totals.unreleased} unreleased`;
       return `
 <section class="dash-lh" aria-label="Library health">
-  <p class="dash-lh__eyebrow">Library health · ${totals.monitored} monitored</p>
+  <p class="dash-lh__eyebrow">Library health · ${barTotal} items tracked</p>
   <div class="dash-lh__headline">
-    <span class="dash-lh__stat">
+    <span class="dash-lh__stat" data-tip="Items Houndarr can search right now across every enabled instance.">
       <span class="dash-lh__stat-value dash-lh__stat-value--eligible">${eligible}</span>
       <span class="dash-lh__stat-label dash-lh__stat-label--eligible">Eligible</span>
     </span>
-    <span class="dash-lh__stat">
+    <span class="dash-lh__stat" data-tip="Items on per-item cooldown from a recent search. They return to Eligible once the cooldown elapses.">
       <span class="dash-lh__stat-value dash-lh__stat-value--gated">${gated}</span>
       <span class="dash-lh__stat-label">Gated</span>
     </span>
-    <span class="dash-lh__stat">
+    <span class="dash-lh__stat" data-tip="Items still awaiting their release date.">
       <span class="dash-lh__stat-value dash-lh__stat-value--unrel">${totals.unreleased}</span>
       <span class="dash-lh__stat-label">Unreleased</span>
     </span>
@@ -310,6 +372,24 @@ function initDashboardPage() {
       return 'var(--color-brand-400)';
     }
 
+    // Inline Lucide SVG per search kind.  Paths are verbatim from
+    // Lucide v0.x; colors come from --color-kind-* tokens set on the
+    // element's `data-kind` attribute in app.css.  Returns '' for an
+    // unknown kind so render sites can drop the icon entirely without
+    // a wrapper element leaking into the layout.
+    function searchKindIcon(kind) {
+      const label = kind === 'missing' ? 'Missing search'
+        : kind === 'cutoff' ? 'Cutoff search'
+        : kind === 'upgrade' ? 'Upgrade search'
+        : '';
+      if (!label) return '';
+      const path =
+        kind === 'missing' ? '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>'
+        : kind === 'cutoff' ? '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>'
+        : '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>';
+      return `<svg class="kind-icon" data-kind="${kind}" role="img" aria-label="${label}" title="${label}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+    }
+
     function renderRecentHunts(recentSearches) {
       if (!recentSearches || recentSearches.length === 0) {
         return `
@@ -325,6 +405,7 @@ function initDashboardPage() {
           const title = r.item_label || 'Untitled';
           return `
         <div class="dash-trail__row">
+          ${searchKindIcon(r.search_kind)}
           <span class="dash-trail__title">${escHtml(title)}</span>
           <span class="dash-trail__inst" style="color: ${color};">${escHtml(r.instance_name)}</span>
           <span class="dash-trail__when">${escHtml(formatTimeAgo(r.timestamp))}</span>
@@ -400,6 +481,57 @@ function initDashboardPage() {
       return `<span class="dash-pill dash-pill--active"><span class="dash-pill__dot"></span>Active</span>`;
     }
 
+    // Hourly search-budget bar.  Shows how many indexer hits the
+    // instance has dispatched in the last rolling hour against the
+    // dominant cap (missing + cutoff + upgrade, when enabled).  The
+    // "am I about to get banned by my indexer" signal — #1 research-
+    // identified trust anxiety and Huntarr's single most-praised
+    // widget pre-incident.  Suppressed when hourly_cap=0 (unlimited)
+    // since the denominator is meaningless.
+    function renderBudgetBar(inst) {
+      if (!inst.enabled || inst.active_error) {
+        return '';
+      }
+      const hourlyCap = toNumber(inst.hourly_cap);
+      if (hourlyCap <= 0) {
+        // hourly_cap=0 means the user disabled the ceiling.  We still
+        // emit the budget slot so two cards in the same grid row stay
+        // the same height (the cooldown box above has flex:1 1 auto
+        // and would otherwise swell to absorb the missing bar).
+        const tip = `Hourly cap disabled for this instance. No ceiling on searches dispatched per hour.`;
+        return `
+<div class="dash-card__budget dash-card__budget--unlimited" data-tip="${escHtml(tip)}">
+  <dt class="dash-card__budget-label">Hourly budget</dt>
+  <dd class="dash-card__budget-value">Unlimited</dd>
+  <div class="dash-card__budget-bar" aria-hidden="true">
+    <span class="dash-card__budget-fill"></span>
+  </div>
+</div>`;
+      }
+      const effectiveCap =
+        hourlyCap
+        + (inst.cutoff_enabled ? toNumber(inst.cutoff_hourly_cap) : 0)
+        + (inst.upgrade_enabled ? toNumber(inst.upgrade_hourly_cap) : 0);
+      const used = Math.max(0, toNumber(inst.searches_last_hour));
+      const pct = effectiveCap > 0 ? Math.min(100, (used / effectiveCap) * 100) : 0;
+      const level = pct >= 80 ? 'danger' : pct >= 50 ? 'warning' : 'eligible';
+      const atCap = effectiveCap > 0 && used >= effectiveCap;
+      // Short sentence shown in the shared tooltip on hover; aria
+      // label keeps the detailed breakdown for screen readers.
+      const tip = `Searches dispatched this hour against this instance's combined hourly cap.`;
+      const aria = `${used} of ${effectiveCap} searches used this hour. `
+        + `Missing cap ${hourlyCap}, cutoff cap ${inst.cutoff_enabled ? toNumber(inst.cutoff_hourly_cap) : 'off'}, `
+        + `upgrade cap ${inst.upgrade_enabled ? toNumber(inst.upgrade_hourly_cap) : 'off'}.`;
+      return `
+<div class="dash-card__budget" data-level="${level}"${atCap ? ' data-at-cap="true"' : ''} data-tip="${escHtml(tip)}">
+  <dt class="dash-card__budget-label">Hourly budget</dt>
+  <dd class="dash-card__budget-value">${used} / ${effectiveCap}</dd>
+  <div class="dash-card__budget-bar" role="img" aria-label="${escHtml(aria)}">
+    <span class="dash-card__budget-fill" style="--budget-fill: ${pct.toFixed(1)}%;"></span>
+  </div>
+</div>`;
+    }
+
     function renderUnlockPanel(inst) {
       if (!inst.enabled) {
         return `
@@ -432,6 +564,7 @@ function initDashboardPage() {
         const title = row.item_label || `Item ${row.item_id}`;
         return `
       <div class="dash-unlocks__row">
+        ${searchKindIcon(row.last_search_kind)}
         <span class="dash-unlocks__title">${escHtml(title)}</span>
         <span class="dash-unlocks__time">${escHtml(formatTimeUntil(row.unlock_at))}</span>
       </div>`;
@@ -512,6 +645,34 @@ function initDashboardPage() {
       }).join('');
     }
 
+    // Stale-snapshot pill.  Surfaced when the instance's
+    // monitored_total / unreleased_count were last refreshed more
+    // than 15 minutes ago (10-minute scheduled refresh + 5-minute
+    // grace for a missed tick).  Flags the condition where an *arr
+    // goes silent and the dashboard's Wanted/Eligible numbers freeze
+    // without any visual signal.  Returns '' when fresh so a healthy
+    // card stays uncluttered.
+    const SNAPSHOT_STALE_THRESHOLD_MS = 15 * 60 * 1000;
+    function renderStaleSnapshotPill(inst) {
+      if (!inst.enabled || inst.active_error) return '';
+      const ts = inst.snapshot_refreshed_at;
+      if (!ts) return '';
+      const refreshed = Date.parse(ts);
+      if (Number.isNaN(refreshed)) return '';
+      const age = Date.now() - refreshed;
+      if (age <= SNAPSHOT_STALE_THRESHOLD_MS) return '';
+      const label = `counts ${formatTimeAgo(ts)} old`;
+      return `
+  <span class="dash-card__stale" title="Wanted / Eligible counts last refreshed ${escHtml(formatTimeAgo(ts))}. Normal refresh cadence is 10 minutes; longer gaps usually mean the *arr is unreachable.">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/>
+      <path d="M12 9v4"/>
+      <path d="M12 17h.01"/>
+    </svg>
+    <span>${escHtml(label)}</span>
+  </span>`;
+    }
+
     function renderCardFooter(inst) {
       const disabled = !inst.enabled;
       const offline = !disabled && !!inst.active_error;
@@ -525,12 +686,34 @@ function initDashboardPage() {
         footText = `offline since ${escHtml(since || 'just now')}`;
       } else {
         const sleep = toNumber(inst.sleep_interval_mins);
-        const nextPatrol = `${sleep}m`;
-        footText = `last dispatch ${escHtml(lastDispatch || 'never')} <span class="sep">·</span> next patrol ${escHtml(nextPatrol)}`;
+        // Countdown anchor preference order:
+        //   1. last_cycle_end  - supervisor's in-memory cycle-end
+        //      timestamp, advances once per cycle regardless of
+        //      whether any rows were written.  Solves the
+        //      "everything LRU-throttled" case that froze the
+        //      previous last_activity_at anchor.
+        //   2. last_activity_at - newest searched/skipped/error row.
+        //      Used on supervisor restart before a cycle has
+        //      completed, and any time the supervisor isn't available
+        //      (e.g. a stub deployment without an engine).
+        //   3. last_dispatch_at - newest searched row only.  Final
+        //      fallback; same field the very first iteration of this
+        //      countdown used before we realised it froze on skip-
+        //      only cycles.
+        const anchor =
+          inst.last_cycle_end
+          || inst.last_activity_at
+          || inst.last_dispatch_at
+          || '';
+        footText = `last dispatch ${escHtml(lastDispatch || 'never')} <span class="sep">·</span>`
+          + ` next patrol <span data-next-patrol`
+          + ` data-anchor="${escHtml(anchor)}"`
+          + ` data-sleep-min="${sleep}">${sleep}m</span>`;
       }
       return `
 <div class="dash-card__foot">
   <span class="dash-card__foot-text">${footText}</span>
+  ${renderStaleSnapshotPill(inst)}
   <button class="dash-run-now"
           hx-post="/api/instances/${inst.id}/run-now"
           hx-swap="none"
@@ -548,7 +731,7 @@ function initDashboardPage() {
       const offline = !disabled && !!inst.active_error;
       const typeAttr = inst.type ? ` data-type="${escHtml(inst.type)}"` : '';
       const disabledAttr = disabled ? ' data-disabled="true"' : '';
-      const watchingVal = toNumber(inst.monitored_total);
+      const wantedVal = toNumber(inst.monitored_total);
       const bd = inst.cooldown_breakdown || { missing: 0, cutoff: 0, upgrade: 0 };
       // Per-card Eligible mirrors the library-health formula: upgrade
       // cooldowns are tracked separately from monitored_total (the
@@ -556,20 +739,31 @@ function initDashboardPage() {
       // the in-monitored cooldown buckets here.
       const gated = toNumber(bd.missing) + toNumber(bd.cutoff);
       const unr = toNumber(inst.unreleased_count);
-      const eligibleVal = Math.max(0, watchingVal - gated - unr);
-      const searchedVal = toNumber(inst.lifetime_searched);
+      const eligibleVal = Math.max(0, wantedVal - gated - unr);
+      // "Searched" on the card shows the rolling 24-hour dispatch
+      // count (the rate that matters for indexer pressure).  The
+      // cumulative lifetime count rides on a hover tooltip attached
+      // directly to the value; tooltip.js wires [data-tip] into the
+      // shared floating panel.  Suppressed when the two numbers are
+      // equal, which is trivially true on fresh installs where
+      // everything still fits inside the 24-hour window.
+      const searched24hVal = toNumber(inst.searched_24h);
+      const lifetimeVal = toNumber(inst.lifetime_searched);
+      const lifetimeTip = lifetimeVal > 0 && lifetimeVal !== searched24hVal
+        ? ` data-tip="Lifetime: ${lifetimeVal} search${lifetimeVal === 1 ? '' : 'es'}"`
+        : '';
 
-      const watchingText = offline || disabled
-        ? `<dd class="dash-card__stat-value dash-card__stat-value--muted">${watchingVal || '-'}</dd>`
-        : `<dd class="dash-card__stat-value">${watchingVal}</dd>`;
+      const wantedText = offline || disabled
+        ? `<dd class="dash-card__stat-value dash-card__stat-value--muted">${wantedVal || '-'}</dd>`
+        : `<dd class="dash-card__stat-value">${wantedVal}</dd>`;
       const eligibleText = offline
         ? `<dd class="dash-card__stat-value dash-card__stat-value--muted">-</dd>`
         : disabled
           ? `<dd class="dash-card__stat-value dash-card__stat-value--muted">-</dd>`
           : `<dd class="dash-card__stat-value dash-card__stat-value--eligible">${eligibleVal}</dd>`;
       const searchedText = offline || disabled
-        ? `<dd class="dash-card__stat-value dash-card__stat-value--muted">${searchedVal}</dd>`
-        : `<dd class="dash-card__stat-value dash-card__stat-value--searched">${searchedVal}</dd>`;
+        ? `<dd class="dash-card__stat-value dash-card__stat-value--muted"${lifetimeTip}>${searched24hVal}</dd>`
+        : `<dd class="dash-card__stat-value dash-card__stat-value--searched"${lifetimeTip}>${searched24hVal}</dd>`;
 
       return `
 <article class="dash-card"${typeAttr}${disabledAttr}>
@@ -581,20 +775,21 @@ function initDashboardPage() {
     ${renderStatusPill(inst)}
   </header>
   <dl class="dash-card__stats">
-    <div>
-      <dt class="dash-card__stat-label">Watching</dt>
-      ${watchingText}
+    <div data-tip="Missing and Cutoff Unmet items reported by this instance.">
+      <dt class="dash-card__stat-label">Wanted</dt>
+      ${wantedText}
     </div>
-    <div>
+    <div data-tip="Items Houndarr can search now: Wanted minus items on cooldown or not yet released.">
       <dt class="dash-card__stat-label">Eligible</dt>
       ${eligibleText}
     </div>
-    <div>
+    <div data-tip="Dispatches this instance made in the last 24 hours. Hover the number for the lifetime total.">
       <dt class="dash-card__stat-label">Searched</dt>
       ${searchedText}
     </div>
   </dl>
   ${renderUnlockPanel(inst)}
+  ${renderBudgetBar(inst)}
   <p class="dash-policy">${renderPolicyChips(inst)}
   </p>
   ${renderCardFooter(inst)}
@@ -614,6 +809,16 @@ function initDashboardPage() {
       // clicks on the View-logs link and the + Add Instance link.
       if (window.htmx && typeof window.htmx.process === 'function') {
         window.htmx.process(host);
+      }
+      // Bind tooltip triggers on the freshly-mounted subtree.  This
+      // path replaces DOM directly via replaceChildren rather than
+      // through an HTMX swap, so the htmx:afterSwap listener inside
+      // tooltip.js never fires for it; call initTooltips explicitly
+      // so the library-health stat tooltips and instance-card
+      // Wanted / Eligible / Searched / Hourly budget tooltips bind
+      // on first paint and every /api/status poll.
+      if (typeof window.initTooltips === 'function') {
+        window.initTooltips(host);
       }
     }
 
@@ -719,6 +924,39 @@ function initDashboardPage() {
       },
       { signal },
     );
+
+    // Live "next patrol" countdown.  Renders on every [data-next-patrol]
+    // element once per second, computing `next_patrol_at = anchor +
+    // sleep_interval_mins * 60s` from data attributes written server-
+    // side via the envelope.  The anchor is `last_activity_at` (newest
+    // searched/skipped/error row, which advances at the end of every
+    // cycle whether items dispatched or all got skipped); falling
+    // back to `last_dispatch_at` and then to a static label if neither
+    // is present.  Transitions to "running..." when the timer hits
+    // zero and stays there until the next 30s status poll refreshes
+    // the anchor.
+    function formatNextPatrol(anchor, sleepMin) {
+      if (sleepMin <= 0) return '-';
+      if (!anchor) return `${sleepMin}m`;
+      const last = Date.parse(anchor);
+      if (Number.isNaN(last)) return `${sleepMin}m`;
+      const remaining = (last + sleepMin * 60_000) - Date.now();
+      if (remaining <= 0) return 'running...';
+      if (remaining <= 60_000) return `${Math.ceil(remaining / 1000)}s`;
+      return `${Math.ceil(remaining / 60_000)}m`;
+    }
+    function tickNextPatrol() {
+      document.querySelectorAll('[data-next-patrol]').forEach(function (el) {
+        const nextText = formatNextPatrol(
+          el.dataset.anchor || '',
+          Number(el.dataset.sleepMin) || 0,
+        );
+        if (el.textContent !== nextText) el.textContent = nextText;
+      });
+    }
+    const nextPatrolInterval = setInterval(tickNextPatrol, 1000);
+    signal.addEventListener('abort', () => clearInterval(nextPatrolInterval));
+    tickNextPatrol();
 }
 
 // Direct load.
