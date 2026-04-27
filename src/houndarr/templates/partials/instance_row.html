@@ -4,12 +4,12 @@
   <td data-col="name" class="px-4 py-3 font-medium text-white font-sans">{{ instance.core.name }}</td>
   <td data-col="type" class="px-4 py-3">
     {%- set badge_map = {
-      'sonarr':   {'bg': 'bg-sky-950/60',     'text': 'text-sky-300',     'border': 'border-sky-900/50',     'accent': 'border-l-sky-400',   'label': 'Sonarr'},
-      'radarr':   {'bg': 'bg-amber-950/60',   'text': 'text-amber-300',   'border': 'border-amber-900/50',   'accent': 'border-l-amber-400', 'label': 'Radarr'},
-      'lidarr':   {'bg': 'bg-emerald-950/60', 'text': 'text-emerald-300', 'border': 'border-emerald-900/50', 'accent': 'border-l-emerald-400','label': 'Lidarr'},
-      'readarr':  {'bg': 'bg-rose-950/60',    'text': 'text-rose-300',    'border': 'border-rose-900/50',    'accent': 'border-l-rose-400',  'label': 'Readarr'},
-      'whisparr_v2': {'bg': 'bg-pink-950/60',    'text': 'text-pink-300',    'border': 'border-pink-900/50',    'accent': 'border-l-pink-400',  'label': 'Whisparr v2'},
-      'whisparr_v3': {'bg': 'bg-fuchsia-950/60', 'text': 'text-fuchsia-300', 'border': 'border-fuchsia-900/50', 'accent': 'border-l-fuchsia-400','label': 'Whisparr v3'},
+      'sonarr':      {'bg': 'bg-sonarr-bg',      'text': 'text-sonarr',      'border': 'border-sonarr/40',      'label': 'Sonarr'},
+      'radarr':      {'bg': 'bg-radarr-bg',      'text': 'text-radarr',      'border': 'border-radarr/40',      'label': 'Radarr'},
+      'lidarr':      {'bg': 'bg-lidarr-bg',      'text': 'text-lidarr',      'border': 'border-lidarr/40',      'label': 'Lidarr'},
+      'readarr':     {'bg': 'bg-readarr-bg',     'text': 'text-readarr',     'border': 'border-readarr/40',     'label': 'Readarr'},
+      'whisparr_v2': {'bg': 'bg-whisparr-bg',    'text': 'text-whisparr',    'border': 'border-whisparr/40',    'label': 'Whisparr v2'},
+      'whisparr_v3': {'bg': 'bg-whisparr-v3-bg', 'text': 'text-whisparr-v3', 'border': 'border-whisparr-v3/40', 'label': 'Whisparr v3'},
     } -%}
     {%- set b = badge_map.get(instance.core.type.value, badge_map['sonarr']) -%}
     <span class="inline-flex items-center px-2 py-0.5 rounded-chip text-xs font-mono {{ b.bg }} {{ b.text }} border {{ b.border }}">
@@ -57,7 +57,7 @@
         hx-get="/settings/instances/{{ instance.core.id }}/edit"
         hx-target="#add-instance-modal-content"
         hx-swap="innerHTML"
-        class="px-3 py-1 text-xs rounded bg-[#1e2638] hover:bg-[#2a3448] text-slate-200 border border-[#2a3448] transition-colors">
+        class="px-3 py-1 text-xs rounded-inset bg-surface-3 hover:bg-border-default text-slate-200 border border-border-default transition-colors duration-base ease-station">
         Edit
       </button>
       <button

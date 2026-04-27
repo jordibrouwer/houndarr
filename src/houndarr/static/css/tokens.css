@@ -1,11 +1,17 @@
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Houndarr — Station Design System Tokens                                    */
+/* Houndarr: Station Design System Tokens                                     */
 /* All design decisions live here. App and docs both import this file.        */
+/*                                                                            */
+/* Palette hex values are mirrored into base.html's inline Tailwind CDN       */
+/* config (brand, surface, border, danger, success, warning, info, seg, and   */
+/* per-*arr type colors) because CDN Tailwind cannot read CSS variables at    */
+/* build time. When editing a palette/state/type hex here, update base.html   */
+/* to match.                                                                  */
 /* ─────────────────────────────────────────────────────────────────────────── */
 
 :root {
   /* ── Palette ─────────────────────────────────────────────────────────── */
-  --color-base:      #07080f;   /* body background — midnight navy */
+  --color-base:      #07080f;   /* body background: midnight navy */
   --color-surface-1: #0e1117;   /* card / nav background */
   --color-surface-2: #151b27;   /* secondary surface, input bg */
   --color-surface-3: #1e2638;   /* border color, tertiary surface */
@@ -15,7 +21,26 @@
   --color-border-default: #2a3448;
   --color-border-strong:  #3d4f6b;
 
-  /* ── Brand — refined Station cyan ────────────────────────────────────── */
+  /* ── Text scale ──────────────────────────────────────────────────────
+     Semantic tokens for text so intent survives a rebrand or theme swap.
+     Ordered high-contrast to low-contrast. Pass-through pattern: new
+     components should reach for these, not raw slate hex values. */
+  --color-text-heading:  #f8fafc;   /* page h1 (highest emphasis) */
+  --color-text-primary:  #e2e8f0;   /* body text on dark surfaces */
+  --color-text-emphasis: #cbd5e1;   /* secondary emphasis, stat values */
+  --color-text-muted:    #94a3b8;   /* passes 4.5:1 body-text threshold */
+  --color-text-subtle:   #64748b;   /* UI-element only (3:1 minimum) */
+  --color-text-inverse:  #ffffff;   /* on primary buttons + modal accents */
+
+  /* ── State text tints ────────────────────────────────────────────────
+     Lighter text variants of the core state colors for use on neutral
+     backgrounds (headings, icons, pill text). On colored state backgrounds
+     (e.g. --color-danger-bg) components use inline tints since those sit
+     inside a narrow context and do not warrant their own tokens. */
+  --color-danger-text:  #fca5a5;
+  --color-success-text: #86efac;
+
+  /* ── Brand (refined Station cyan) ────────────────────────────────────── */
   --color-brand-50:  #ecfeff;
   --color-brand-100: #cffafe;
   --color-brand-200: #a5f3fc;
@@ -58,21 +83,21 @@
                ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
 
   /* ── Spacing (4px base, 8px unit) ───────────────────────────────────── */
-  --space-1: 0.25rem;   /*  4px — micro gaps, badge padding */
-  --space-2: 0.5rem;    /*  8px — input padding, label gap */
-  --space-3: 0.75rem;   /* 12px — card padding units */
-  --space-4: 1rem;      /* 16px — standard section padding */
-  --space-5: 1.5rem;    /* 24px — comfortable card padding */
-  --space-6: 2rem;      /* 32px — section gaps */
-  --space-7: 3rem;      /* 48px — generous page gaps */
-  --space-8: 4rem;      /* 64px — hero rhythm */
+  --space-1: 0.25rem;   /*  4px, micro gaps, badge padding */
+  --space-2: 0.5rem;    /*  8px, input padding, label gap */
+  --space-3: 0.75rem;   /* 12px, card padding units */
+  --space-4: 1rem;      /* 16px, standard section padding */
+  --space-5: 1.5rem;    /* 24px, comfortable card padding */
+  --space-6: 2rem;      /* 32px, section gaps */
+  --space-7: 3rem;      /* 48px, generous page gaps */
+  --space-8: 4rem;      /* 64px, hero rhythm */
 
   /* ── Border radius ───────────────────────────────────────────────────── */
-  --radius-sm:   4px;     /* inputs, inline badges */
-  --radius-md:   6px;     /* cards, buttons, tooltips */
-  --radius-lg:   10px;    /* modals, panels, popovers */
-  --radius-xl:   16px;    /* large panels */
-  --radius-full: 9999px;  /* pill badges */
+  --radius-sm:   4px;        /* inputs, inline badges */
+  --radius-md:   6px;        /* cards, buttons, tooltips */
+  --radius-lg:   0.625rem;   /* modals, panels, popovers (10px at 16px base) */
+  --radius-xl:   1rem;       /* large panels (16px at 16px base) */
+  --radius-full: 9999px;     /* pill badges */
 
   /* ── Shadows (cool-toned, midnight-shifted) ──────────────────────────── */
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.50);
@@ -85,6 +110,13 @@
   --glow-success:      0 0 8px  rgba(74, 222, 128, 0.20);
   --glow-danger:       0 0 8px  rgba(248, 113, 113, 0.20);
   --glow-logo:         0 0 18px rgba(34, 211, 238, 0.22);
+
+  /* Brand-cyan hover tints used as solid background colors (not
+     box-shadows).  auth-fields.css reaches for these on the
+     password-toggle icon button; keeping them next to the glow
+     family keeps every brand-alpha variant in one place. */
+  --glow-brand-soft:   rgba(34, 211, 238, 0.08);
+  --glow-brand-medium: rgba(34, 211, 238, 0.14);
 
   /* ── Motion ─────────────────────────────────────────────────────────── */
   --ease-station: cubic-bezier(0.16, 1, 0.3, 1);    /* precise settle */

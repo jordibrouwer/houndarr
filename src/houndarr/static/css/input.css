@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────── */
-/* Houndarr — Tailwind CSS v4 build entry point                           */
+/* Houndarr: Tailwind CSS v4 build entry point                            */
 /*                                                                        */
 /* Compiled at Docker build time to src/houndarr/static/css/app.built.css  */
 /* by the css-build stage in the Dockerfile. The runtime image ships only  */
@@ -12,6 +12,19 @@
 /* resolve. Palette/radius/duration values stay in sync with tokens.css,   */
 /* which is still the source of truth for design decisions.                */
 /* ─────────────────────────────────────────────────────────────────────── */
+
+/* Permanent-dark posture.
+   Houndarr has no theme toggle and no light-mode stylesheet; the
+   application shell renders against #07080f (--color-surface-base) at
+   all times and there is no plan to add a `prefers-color-scheme: light`
+   branch.  Every @theme token below, every --color-*-bg tint in
+   tokens.css, and every daisyUI override in this file is calibrated
+   against that dark surface: soft-badge bg tokens use rgba values
+   tuned to read over #07080f, the daisyUI theme sets
+   `color-scheme: dark` + `prefersdark: true`, and the login / setup
+   forms rely on auth.css rules that assume a dark card.  Authors
+   editing this file should pick colours with that context in mind
+   and not hedge the palette for a light variant that does not exist. */
 
 /* Google Fonts @import must precede all other rules per CSS spec. Inlined
    from the former fonts.css so the compiled output keeps the import at the
@@ -27,13 +40,13 @@
 /* daisyUI v5 component plugin. Runs at Tailwind build time; nothing
    ships to the browser except compiled CSS. themes: false disables
    the built-in theme set because we define our own "station" theme
-   below — having both would inflate the bundle with unused OKLCH
+   below; having both would inflate the bundle with unused OKLCH
    palettes. */
 @plugin "daisyui" {
   themes: false;
 }
 
-/* Station theme — maps daisyUI's semantic slots to Houndarr's palette.
+/* Station theme: maps daisyUI's semantic slots to Houndarr's palette.
    Kept in parity with tokens.css (source of truth for design decisions)
    and @theme above (Tailwind utility generation). Component radii use
    the existing 3-tier Station radius tokens so daisyUI buttons, inputs,
@@ -72,7 +85,7 @@
   --color-error: #f87171;
   --color-error-content: #07080f;
 
-  /* Radii — three-tier Station scale */
+  /* Radii: three-tier Station scale */
   --radius-selector: 9999px;  /* pill badges + toggles */
   --radius-field:    4px;      /* inputs, buttons */
   --radius-box:      6px;      /* cards, modals */
@@ -109,7 +122,32 @@
   --color-border-default: #2a3448;
   --color-border-strong:  #3d4f6b;
 
-  /* ── Semantic state colors + -bg / -border variants ───────────────── */
+  /* Semantic state colours.
+     Each state (danger / success / warning / info) ships as a family
+     of up to three tokens:
+
+       --color-<state>         Opaque hex (e.g. #f87171 danger).
+                               Use for foreground: text, icon fills,
+                               left-rules on soft alerts.
+       --color-<state>-bg      Low-alpha rgba tuned to layer over
+                               --color-surface-base (#07080f).  Use
+                               for soft-badge / soft-alert / soft-btn
+                               backgrounds; pairs with the `-border`
+                               sibling.  daisyUI's own `badge-soft` /
+                               `alert-soft` defaults mix the state
+                               against --color-base-100 at 8%, which
+                               disappears on Houndarr's near-black
+                               surface: the `-bg` tokens are the
+                               replacement.
+       --color-<state>-border  rgba stroke calibrated to read against
+                               the same dark surface without a
+                               hairline vanishing.
+
+     Use `*-bg` for UI chrome that needs a state tint behind text;
+     pair with `--color-<state>` for the foreground.  Info currently
+     ships only the foreground colour because no surface uses a
+     standalone info tint; when one does, add --color-info-bg at
+     ~15% alpha to match the pattern. */
   --color-danger:        #f87171;
   --color-danger-bg:     rgba(153, 27, 27, 0.30);
   --color-danger-border: rgba(248, 113, 113, 0.35);
@@ -124,14 +162,34 @@
 
   --color-info: #67e8f9;
 
-  /* ── Library-health segment colors (match --seg-*) ────────────────── */
+  /* Library-health segment colours.
+     Distinct from --color-<state>-bg: these are solid opaque hex
+     values designed to render as chart segment fills on the
+     dashboard's library-health bar.  A segment pixel IS the colour,
+     so transparency would muddy the rendering against the surface
+     behind it.  When adding a new `seg-*` token, pick a hex that
+     reads clearly next to the adjacent segments; do not reuse a
+     `*-bg` rgba because the dashboard bar composites segments on a
+     panel, not on --color-surface-base.
+
+     Naming suffix convention: `*-cd` means "cooldown" (cutoff-cd =
+     cutoff cooldown, upgrade-cd = upgrade cooldown).  The five
+     segments map directly to the five tick states tracked in
+     services/metrics.py. */
   --color-seg-eligible:    #4ade80;
   --color-seg-cooldown:    #22d3ee;
   --color-seg-cutoff-cd:   #fcd34d;
   --color-seg-upgrade-cd:  #a78bfa;
   --color-seg-unreleased:  #64748b;
 
-  /* ── Instance-type signature colors ───────────────────────────────── */
+  /* Instance-type signature colours.
+     Per-`*arr` family palette: each entry ships a foreground
+     (`--color-<app>`) and a dark-tinted background
+     (`--color-<app>-bg`) used by `instance_type_badge` in
+     _macros/badges.html.  The `-bg` rgba uses the same
+     layer-over-#07080f calibration as the semantic `*-bg` tokens
+     above, which is why the alpha values sit around 0.50 (Station's
+     branded chip wants more saturation than a success badge). */
   --color-sonarr:       #7dd3fc;
   --color-sonarr-bg:    rgba(8, 47, 73, 0.50);
   --color-radarr:       #fcd34d;
@@ -145,7 +203,36 @@
   --color-whisparr-v3:    #e879f9;
   --color-whisparr-v3-bg: rgba(86, 19, 88, 0.50);
 
-  /* ── Border-radius scale (Station three-tier system) ──────────────── */
+  /* Border-radius scale (Station four-tier system).
+     Each step halves the visual softness as the element gets smaller,
+     so nested elements always read as tighter than their parents:
+
+       --radius-container (6px)  Use for rounded-container.  Cards,
+                                 modals, tablet-width panels, section
+                                 shells.  The app's outermost radii.
+       --radius-inset     (4px)  Use for rounded-inset.  Inputs,
+                                 buttons, inline-flex pills inside a
+                                 container.  Matches daisyUI's
+                                 --radius-field so .btn / .input
+                                 round consistently.
+       --radius-chip      (3px)  Use for rounded-chip.  Badges,
+                                 pill-shaped log markers, dash-pill
+                                 dot chrome.  Matches daisyUI badge
+                                 override (.badge { border-radius:
+                                 var(--radius-chip) }).
+       --radius-bar       (2px)  Accessed only through var(--radius-bar)
+                                 (e.g. dashboard legend swatches,
+                                 auth.css strength-meter segs, app.css
+                                 status bars).  No template uses the
+                                 Tailwind utility `rounded-bar`
+                                 directly; the token still earns its
+                                 place so the var() consumers share
+                                 the same scale step.
+
+     Tailwind v4 generates `rounded-container`, `rounded-inset`,
+     `rounded-chip`, and `rounded-bar` utilities automatically from
+     these --radius-* keys; templates should prefer those utilities
+     over arbitrary values so retuning a tier propagates everywhere. */
   --radius-container: 6px;
   --radius-inset:     4px;
   --radius-chip:      3px;
@@ -162,7 +249,7 @@
                ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
-/* Layered imports — custom design tokens and component primitives.
+/* Layered imports: custom design tokens and component primitives.
    Order matters for cascade: tokens first (variables), then layout,
    then per-page. Tailwind utilities always win regardless of order.
    auth.css and auth-fields.css are introduced by later PRs (login /
@@ -171,13 +258,74 @@
 @import "./tokens.css";
 @import "./app.css";
 
-/* Named duration utilities. Tailwind v4 has no `--duration-*` theme
+/* Named duration utilities.  Tailwind v4 has no `--duration-*` theme
    namespace (durations normally go via numeric arbitrary values), so
-   register fast/base/slow as custom utilities driven by CSS variables
-   declared on :root in tokens.css. */
+   register fast / base as custom utilities driven by CSS variables
+   declared on :root in tokens.css.  A third step `duration-slow`
+   existed pre-Track-G but had zero template consumers; the 280ms
+   `--dur-slow` token itself is still consumed directly by app.css
+   (dash-page-in animation, collapsible max-height transition) so the
+   token survives while the Tailwind utility does not. */
 @utility duration-fast { transition-duration: var(--dur-fast); }
 @utility duration-base { transition-duration: var(--dur-base); }
-@utility duration-slow { transition-duration: var(--dur-slow); }
+
+/* Inline-shadow + brand-rule utilities.  Six inline `style=` attributes
+   in the templates previously carried these exact declarations; three
+   of the four utilities below reference a token (--glow-logo,
+   --shadow-4, --color-brand-500), so a token retune in tokens.css
+   propagates everywhere without touching the HTML.  shadow-modal is
+   intentionally literal: no `--shadow-modal` token exists and the
+   modal drop-shadow is not a reuse of --shadow-4 (different
+   magnitudes), so a future retune would edit the declaration body
+   directly.  Add a --shadow-modal token if a second modal surface
+   ever needs to share the value.
+
+   The ten JS-toggled `style="display:none"` attributes in
+   partials/instance_form.html deliberately stay inline because the
+   toggle is driven by runtime JS that writes element.style.display
+   directly, and a utility class cannot be toggled by mutating a
+   style string. */
+@utility logo-glow          { filter: drop-shadow(var(--glow-logo)); }
+@utility shadow-4           { box-shadow: var(--shadow-4); }
+@utility shadow-modal       { box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(30, 38, 56, 0.8); }
+@utility border-l-brand-rule { border-left: 3px solid var(--color-brand-500); }
+
+/* Component reservation.
+   Empty block that later Track G batches fill with Houndarr-specific
+   component classes (.field-label in G.2, .status-pill variants in
+   G.3). Positioned between the @utility duration rules and the
+   unlayered daisyUI overrides so custom components compose into
+   Tailwind's components layer while daisyUI's own layered rules still
+   sit above them and unlayered overrides below beat both. Keeping the
+   reservation explicit avoids later batches having to guess cascade
+   intent. */
+@layer components {
+  /* .field-label centralises the uppercase-tracking label treatment
+     used by every form_field / select_field call in the instance
+     form.  @apply emits the same utility bundle the macros used to
+     inline so the computed styles are byte-equal per cascade rules
+     (both `.field-label` and the utilities live at (0,1,0)).  Keeping
+     the definition in @layer components means the utilities layer
+     still wins if a caller passes extra Tailwind classes alongside
+     `field-label`. */
+  .field-label {
+    @apply block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wide;
+  }
+
+  /* .status-pill centralises the instance-row status indicator (dot +
+     label) used on the settings page.  The base class captures the
+     shared flex shell; BEM-style `--active / --error / --disabled`
+     modifiers layer on the state colour.  The inner dot keeps its
+     Tailwind utilities inline because its colour is tied to the
+     variant and the `station-pulse-dot` animation toggle only applies
+     to active + error (disabled is intentionally unanimated). */
+  .status-pill {
+    @apply inline-flex items-center justify-center gap-1 text-xs min-w-[4.5rem];
+  }
+  .status-pill--active   { @apply text-success; }
+  .status-pill--error    { @apply text-danger; }
+  .status-pill--disabled { @apply text-slate-500; }
+}
 
 /* ── daisyUI component overrides (Station parity) ─────────────────────
    daisyUI's defaults produce 40px-tall buttons, pill-shaped sans-serif

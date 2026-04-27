@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────── */
-/* Houndarr — Station App Styles                                              */
+/* Houndarr: Station App Styles                                              */
 /* Custom CSS for animations, scrollbar, and states Tailwind can't express.  */
 /* Design tokens live in tokens.css; this file consumes them.                 */
 /* ─────────────────────────────────────────────────────────────────────────── */
@@ -9,6 +9,61 @@ html {
   scrollbar-gutter: stable both-edges;
 }
 
+/* ── Global content scale ────────────────────────────────────────────────
+   Scales every element uniformly so 100% browser zoom reads like 110%.
+   Implemented via html font-size plus rem-based layout (not CSS `zoom`):
+   password-manager extensions (Bitwarden, 1Password) position their inline
+   autofill menu via getBoundingClientRect(), which does not account for
+   CSS zoom and lands the popup offset from the visually-scaled input.
+   Tailwind utilities are rem-based, so they scale automatically; custom
+   CSS below uses rem for layout and keeps px only for hairlines, focus
+   rings, and animation micro-motion. Media queries still evaluate at real
+   viewport pixels, so Tailwind breakpoints trip at their documented
+   widths. */
+html {
+  font-size: 110%;
+}
+
+/* ── Atmosphere painted on <html> ─────────────────────────────────────────
+   CSS Backgrounds Level 3: the root element's background paints the
+   canvas, which includes the area reserved by `scrollbar-gutter`. Keeping
+   the gradient on body left the gutter unpainted and the viewport edges
+   visibly stopped short; moving it to html fixes that while the sticky
+   nav and content stay within body's width. `background-attachment: fixed`
+   locks the gradient to the viewport across scroll. */
+html {
+  background-color: var(--color-base);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  background-image:
+    radial-gradient(ellipse 55% 40% at 0% 0%,    rgba(6, 182, 212, 0.055) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 30% at 100% 100%, rgba(14, 116, 144, 0.030) 0%, transparent 55%),
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 31px,
+      rgba(34, 211, 238, 0.018) 31px,
+      rgba(34, 211, 238, 0.018) 32px
+    );
+}
+
+/* Auth pages (login/setup) swap to a centered radial vignette; no stripes. */
+html:has(body.is-auth) {
+  background-image:
+    radial-gradient(
+      ellipse 110% 95% at 50% 45%,
+      rgba(6, 182, 212, 0.15)  0%,
+      rgba(6, 182, 212, 0.06) 32%,
+      rgba(6, 182, 212, 0.015) 60%,
+      transparent              88%
+    );
+}
+
+/* Body stays transparent so html's atmosphere shows through every page. */
+body {
+  background: transparent;
+}
+
 /* ── Scrollbar ──────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
@@ -16,16 +71,16 @@ html {
 }
 
 ::-webkit-scrollbar-track {
-  background: #0e1117; /* surface-1 */
+  background: var(--color-surface-1);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2a3448; /* border-default */
-  border-radius: 3px;
+  background: var(--color-border-default);
+  border-radius: var(--radius-chip);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #3d4f6b; /* border-strong */
+  background: var(--color-border-strong);
 }
 
 /* ── Instance form select chevron ───────────────────────────────────────── */
@@ -132,11 +187,11 @@ html {
 @keyframes station-pulse {
   0%, 100% {
     opacity: 1;
-    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--seg-eligible) 0%, transparent);
   }
   50% {
     opacity: 0.85;
-    box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--seg-eligible) 18%, transparent);
   }
 }
 
@@ -176,6 +231,105 @@ body > nav {
   box-shadow:
     0 1px 0 #1e2638,
     0 2px 20px rgba(6, 182, 212, 0.065);
+}
+
+/* ── Shared form / button primitives ─────────────────────────────────────
+   Used across auth (login, setup), changelog modal, and the instance
+   form. Keeps dashboard's precision-instrument look consistent with
+   every form control elsewhere. Built with tokens only so changing
+   tokens.css flows through automatically. */
+
+.station-input {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  color: var(--color-text-primary);
+  /* Use background-color (not the shorthand) so the rule does not
+     wipe background-image set by the sibling .station-select class on
+     <select> elements. */
+  background-color: var(--color-surface-2);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-inset);
+  transition:
+    border-color var(--dur-base) var(--ease-station),
+    box-shadow   var(--dur-base) var(--ease-station),
+    background   var(--dur-base) var(--ease-station);
+}
+.station-input::placeholder {
+  color: var(--color-text-muted);
+}
+.station-input:hover {
+  border-color: var(--color-border-strong);
+}
+.station-input:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-brand-400) 70%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-brand-500) 25%, transparent);
+}
+.station-input:disabled,
+.station-input[aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.station-input[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+
+.station-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.875rem;
+  font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: var(--radius-inset);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background   var(--dur-base) var(--ease-station),
+    border-color var(--dur-base) var(--ease-station),
+    color        var(--dur-base) var(--ease-station),
+    transform    var(--dur-base) var(--ease-station);
+}
+.station-button:active {
+  transform: translateY(1px);
+}
+.station-button:disabled,
+.station-button[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.station-button--primary {
+  color: var(--color-text-inverse);
+  background: var(--color-brand-600);
+  border-color: var(--color-brand-500);
+}
+.station-button--primary:hover:not(:disabled) {
+  background: var(--color-brand-500);
+}
+.station-button--secondary {
+  color: var(--color-text-emphasis);
+  background: var(--color-surface-2);
+  border-color: var(--color-border-default);
+}
+.station-button--secondary:hover:not(:disabled) {
+  background: var(--color-surface-3);
+  border-color: var(--color-border-strong);
+  color: #f1f5f9;
+}
+.station-button--danger {
+  color: var(--color-danger);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--color-danger) 50%, transparent);
+}
+.station-button--danger:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger);
 }
 
 /* ── Reduced motion ─────────────────────────────────────────────────────── */
