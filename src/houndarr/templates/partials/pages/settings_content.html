@@ -314,6 +314,9 @@
     font: inherit; color: inherit;
     transition: background-color 180ms ease;
   }
+  .admin-panel__header:hover {
+    background: var(--color-surface-2);
+  }
   .admin-panel__header:focus-visible {
     outline: 2px solid var(--color-brand-400); outline-offset: -2px;
   }
@@ -488,8 +491,6 @@
   }
 </style>
 
-{# The nav already labels this page; the section h2s below (Instances,
-   Admin) carry the page structure.  A redundant h1 was dropped. #}
 {% if error is defined and error %}
 {% call alerts.alert("error", prefix="mb-4", extra="text-sm font-sans") %}{{ error }}{% endcall %}
 {% endif %}
@@ -556,7 +557,7 @@
     <button
       type="button"
       id="admin-toggle"
-      class="admin-panel__header w-full text-left flex items-center justify-between gap-4 px-5 sm:px-6 py-4 sm:py-5 hover:bg-surface-2 transition-colors"
+      class="admin-panel__header w-full text-left flex items-center justify-between gap-4 px-5 sm:px-6 py-4 sm:py-5"
       aria-expanded="false"
       aria-controls="admin-body"
     >
@@ -1314,18 +1315,29 @@
         bulletsEl.classList.add('hidden');
       }
 
+      // Disable the typed-phrase + second-factor inputs when the action
+      // does not require them. Disabled inputs are omitted from the form
+      // payload, so if a future neutral-action handler started reading
+      // the factory-only fields it would receive nothing instead of a
+      // stale user-typed value.
+      const secondInput = secondFactorWrap.querySelector('input');
       if (copy.requiresTyped) {
         typedWrap.classList.remove('hidden');
         secondFactorWrap.classList.remove('hidden');
+        phraseInput.disabled = false;
         phraseInput.value = '';
         phraseInput.placeholder = FACTORY_PHRASE;
-        const secondInput = secondFactorWrap.querySelector('input');
-        if (secondInput) secondInput.value = '';
+        if (secondInput) {
+          secondInput.disabled = false;
+          secondInput.value = '';
+        }
         confirmGo.textContent = copy.cta;
         confirmGo.disabled = true;
       } else {
         typedWrap.classList.add('hidden');
         secondFactorWrap.classList.add('hidden');
+        phraseInput.disabled = true;
+        if (secondInput) secondInput.disabled = true;
         confirmGo.textContent = copy.cta;
         confirmGo.disabled = false;
       }
@@ -1402,6 +1414,26 @@
           }
         }, 320);
       }, FADE_MS);
+    });
+  })();
+
+  /* ── Switch rollback on /preferences error ───────────────────
+     The #admin-updates changelog-popup switch flips visually the moment
+     the user clicks the checkbox, before the form POST reaches the
+     server. /settings/changelog/preferences normally returns 204, but if
+     the write fails (DB locked, etc.) HTMX's config skips the swap for
+     4xx/5xx, leaving the thumb in the user's desired position while the
+     server state stayed the opposite. Listen for htmx:responseError
+     scoped to that form and flip the checkbox back so the DOM stays in
+     sync with what actually persisted. */
+  (function () {
+    document.body.addEventListener('htmx:responseError', (evt) => {
+      const form = evt.detail && evt.detail.elt;
+      if (!(form instanceof HTMLFormElement)) return;
+      if (!form.closest('#admin-updates')) return;
+      const checkbox = form.querySelector('input[type="checkbox"][name="enabled"]');
+      if (!checkbox) return;
+      checkbox.checked = !checkbox.checked;
     });
   })();
 </script>

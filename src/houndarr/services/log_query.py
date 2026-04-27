@@ -23,6 +23,7 @@ does not need to share a handle with sibling reads, so the simpler
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -124,11 +125,12 @@ def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 async def query_logs(
     *,
-    instance_id: int | None = None,
+    instance_ids: Sequence[int] = (),
     action: str | None = None,
     search_kind: str | None = None,
     cycle_trigger: str | None = None,
     hide_system: bool = False,
+    hide_skipped: bool = False,
     before: str | None = None,
     limit: int = LIMIT_DEFAULT,
 ) -> list[dict[str, Any]]:
@@ -146,7 +148,12 @@ async def query_logs(
     the cycle level.
 
     Args:
-        instance_id: Restrict to one instance, or ``None`` for all.
+        instance_ids: Restrict to the supplied instance ids.  Empty
+            sequence (the default) means "no instance filter" and
+            keeps the WHERE clause untouched.  The filter compiles to
+            ``sl.instance_id IN (?, ?, ...)`` so the dashboard error
+            banner's multi-instance deep link pulls logs for every
+            errored instance in one query.
         action: Filter by ``action`` column value, or ``None``.
         search_kind: ``"missing"`` / ``"cutoff"`` / ``"upgrade"``,
             or ``None``.
@@ -170,9 +177,14 @@ async def query_logs(
     conditions: list[str] = []
     params: list[str | int] = []
 
-    if instance_id is not None:
-        conditions.append("sl.instance_id = ?")
-        params.append(instance_id)
+    if instance_ids:
+        # Build a `?,?,?`-style placeholder string whose length equals
+        # the id list; concatenating fixed `?` characters keeps the
+        # query parameterised (placeholders only, never user values)
+        # and leaves the bandit suppression below honest.
+        placeholders = ",".join("?" * len(instance_ids))
+        conditions.append(f"sl.instance_id IN ({placeholders})")  # noqa: S608  # nosec B608
+        params.extend(instance_ids)
 
     if action is not None:
         conditions.append("sl.action = ?")
@@ -191,6 +203,9 @@ async def query_logs(
             "NOT (COALESCE(sl.cycle_trigger, '') = 'system' "
             "OR (sl.instance_id IS NULL AND sl.action = 'info'))"
         )
+
+    if hide_skipped:
+        conditions.append("sl.action != 'skipped'")
 
     if before is not None:
         conditions.append("sl.timestamp < ?")
@@ -287,9 +302,9 @@ async def query_logs(
 
 
 # Map from Instance.core.type.value to the CSS --inst-<slug> token
-# suffix the Logs page cycle cards consume.  Renders the two Whisparr
-# variants as hyphenated slugs Tailwind accepts without an underscore
-# (--inst-whisparr-v2 / --inst-whisparr-v3).  Instances whose type is
+# suffix the Logs page cycle cards consume.  Collapses the two
+# Whisparr variants to slugs Tailwind accepts without an underscore
+# (--inst-whisparr / --inst-whisparr-v3).  Instances whose type is
 # unknown to this map (future *arr families, legacy rows) fall
 # through to an empty string; the template then omits the accent
 # style attribute entirely.
@@ -298,7 +313,7 @@ _INSTANCE_TYPE_TO_ACCENT_SLUG = {
     "radarr": "radarr",
     "lidarr": "lidarr",
     "readarr": "readarr",
-    "whisparr_v2": "whisparr-v2",
+    "whisparr_v2": "whisparr",
     "whisparr_v3": "whisparr-v3",
 }
 

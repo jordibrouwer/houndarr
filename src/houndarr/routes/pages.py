@@ -27,6 +27,20 @@ from houndarr.services.instances import list_instances
 router = APIRouter()
 
 
+# Map InstanceType enum value to the accent slug used in --inst-* CSS tokens.
+# The cycle-card template reads instance_accent_by_name[name] and emits a
+# --cycle-accent CSS variable; this dispatch keeps the slug resolution in
+# Python so the template stays declarative.
+_INSTANCE_TYPE_TO_ACCENT_SLUG = {
+    "sonarr": "sonarr",
+    "radarr": "radarr",
+    "lidarr": "lidarr",
+    "readarr": "readarr",
+    "whisparr_v2": "whisparr-v2",
+    "whisparr_v3": "whisparr-v3",
+}
+
+
 def _render(
     request: Request,
     template_name: str,
@@ -217,76 +231,96 @@ async def dashboard(request: Request) -> HTMLResponse:
 @router.get("/logs", response_class=HTMLResponse)
 async def logs_page(
     request: Request,
-    instance_id: str | None = Query(default=None),
+    instance_id: list[str] = Query(default_factory=list),
     action: str | None = Query(default=None),
     search_kind: str | None = Query(default=None),
     cycle_trigger: str | None = Query(default=None),
     hide_system: str | None = Query(default=None),
+    hide_skipped: str | None = Query(default=None),
 ) -> HTMLResponse:
     """Search log viewer page.
 
     Query parameters pre-apply filters so the dashboard's error banner
     and per-card error pill can deep-link straight to the relevant
-    instance/action rows.
+    instance/action rows.  ``instance_id`` is declared as ``list[str]``
+    because the dashboard banner passes one value per errored instance
+    via a repeated query param; FastAPI preserves every occurrence so
+    a URL like ``/logs?instance_id=1&instance_id=2&action=error``
+    hydrates the multi-select filter's checkboxes without a redirect.
     """
     from houndarr.routes.api.logs import (
         _parse_cycle_trigger,
         _parse_hide_system,
-        _parse_instance_id,
+        _parse_instance_ids,
         _parse_search_kind,
+        parse_hide_skipped,
     )
     from houndarr.services.log_query import (
         compute_load_more_limit,
+        instance_accent_by_name,
         query_logs,
-        summarize_rows,
     )
 
     try:
-        parsed_instance_id = _parse_instance_id(instance_id)
+        parsed_instance_ids = _parse_instance_ids(instance_id)
         parsed_search_kind = _parse_search_kind(search_kind)
         parsed_cycle_trigger = _parse_cycle_trigger(cycle_trigger)
         parsed_hide_system = _parse_hide_system(hide_system) if hide_system is not None else True
+        parsed_hide_skipped = (
+            parse_hide_skipped(hide_skipped) if hide_skipped is not None else False
+        )
     except HTTPException:
         # Malformed query string: fall back to unfiltered view so the
         # page still loads rather than bubbling a 422 JSON response.
-        parsed_instance_id = None
+        parsed_instance_ids = ()
         parsed_search_kind = None
         parsed_cycle_trigger = None
         parsed_hide_system = True
+        parsed_hide_skipped = False
 
     parsed_action = action or None
 
     master_key: bytes = request.app.state.master_key
     instances = await list_instances(master_key=master_key)
     rows = await query_logs(
-        instance_id=parsed_instance_id,
+        instance_ids=parsed_instance_ids,
         action=parsed_action,
         search_kind=parsed_search_kind,
         cycle_trigger=parsed_cycle_trigger,
         hide_system=parsed_hide_system,
+        hide_skipped=parsed_hide_skipped,
         before=None,
         limit=50,
     )
-    summary = summarize_rows(rows)
+
+    # Precompute the name -> accent-slug lookup the cycle-card template
+    # uses to set --cycle-accent.  Queries the instances table once,
+    # server-side, so the Jinja loop does not rebuild per-row.  The
+    # partial route calls the same helper on every HTMX append so
+    # paginated pages get identical accents.
+    accent_map = await instance_accent_by_name()
+
     template_name = "partials/pages/logs_content.html" if is_hx_request(request) else "logs.html"
     return _render(
         request,
         template_name,
         instances=instances,
         rows=rows,
-        summary=summary,
+        instance_accent_by_name=accent_map,
         limit=50,
         load_more_limit=compute_load_more_limit(50),
-        selected_instance_id=parsed_instance_id,
+        selected_instance_ids=parsed_instance_ids,
         selected_action=parsed_action,
         selected_search_kind=parsed_search_kind,
         selected_cycle_trigger=parsed_cycle_trigger,
         selected_hide_system=parsed_hide_system,
-        instance_id=parsed_instance_id,
+        selected_hide_skipped=parsed_hide_skipped,
+        instance_ids=parsed_instance_ids,
         action=parsed_action,
         search_kind=parsed_search_kind,
         cycle_trigger=parsed_cycle_trigger,
         hide_system=parsed_hide_system,
+        hide_skipped=parsed_hide_skipped,
         before=None,
     )
 
