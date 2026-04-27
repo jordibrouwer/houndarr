@@ -208,33 +208,12 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# 5. Rate limiting
+# 5. Rate limiting runs last among the HTTP-layer sections so it does not
+# poison the per-IP login bucket that the factory-reset checks in 6b rely
+# on (admin.py gates factory-reset through the same check_login_rate_limit
+# counter, so tripping the bucket here before running 6b makes wrong-
+# password -> 422 flake into wrong-password -> 429).
 # -----------------------------------------------------------------------
-
-_section "5. Rate limiting"
-
-# Acquire a CSRF token for login attempts (fresh jar)
-rm -f /tmp/houndarr_smoke_rl_cookies
-curl -s -c /tmp/houndarr_smoke_rl_cookies -b /tmp/houndarr_smoke_rl_cookies \
-    -o /dev/null "$HOST/login" >/dev/null 2>&1 || true
-RL_CSRF=$(grep "houndarr_csrf" /tmp/houndarr_smoke_rl_cookies 2>/dev/null | awk '{print $NF}' || true)
-
-LAST_SC="000"
-for i in $(seq 1 7); do
-    LAST_SC=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
-        --max-redirs 0 \
-        -c /tmp/houndarr_smoke_rl_cookies \
-        -b /tmp/houndarr_smoke_rl_cookies \
-        -H "X-CSRF-Token: ${RL_CSRF}" \
-        -d "username=${USERNAME}&password=wrong_password_smoke_test" \
-        "$HOST/login" || true)
-done
-
-if [[ "$LAST_SC" == "429" ]]; then
-    _pass "7 rapid failed logins -> 429 (rate limit triggered)"
-else
-    _fail "7 rapid failed logins -> $LAST_SC (expected 429)"
-fi
 
 # -----------------------------------------------------------------------
 # 6. Authenticated checks (requires successful login above)
@@ -324,8 +303,73 @@ if [[ "$AUTHENTICATED" == "1" ]]; then
     else
         _fail "POST /settings/admin/factory-reset with wrong phrase -> $SC (expected 422 or 429)"
     fi
+
+    # Rate limit regression guard: six wrong-password factory-reset
+    # attempts must trip the shared /login IP bucket so a session-
+    # compromised attacker cannot brute-force the admin password
+    # through the destructive endpoint. The first five return 422;
+    # the sixth must return 429.
+    #
+    # Uses a dedicated cookie jar so login-attempt noise from earlier
+    # sections (Section 5's rate-limit probe) doesn't mix with the
+    # counter this section is trying to assert on.
+    rm -f /tmp/houndarr_smoke_rl2_cookies
+    curl -s -c /tmp/houndarr_smoke_rl2_cookies \
+        -b /tmp/houndarr_smoke_rl2_cookies \
+        -o /dev/null \
+        -d "username=${USERNAME}&password=${PASSWORD}" \
+        "$HOST/login" >/dev/null 2>&1 || true
+    RL2_CSRF=$(grep "houndarr_csrf" /tmp/houndarr_smoke_rl2_cookies 2>/dev/null | awk '{print $NF}' || true)
+
+    LAST_FR_SC="000"
+    for i in $(seq 1 6); do
+        LAST_FR_SC=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            --max-redirs 0 \
+            -c /tmp/houndarr_smoke_rl2_cookies \
+            -b /tmp/houndarr_smoke_rl2_cookies \
+            -H "X-CSRF-Token: ${RL2_CSRF}" \
+            -d "confirm_phrase=RESET&current_password=definitely-not-the-password" \
+            "$HOST/settings/admin/factory-reset" || true)
+    done
+
+    if [[ "$LAST_FR_SC" == "429" ]]; then
+        _pass "6 rapid wrong-password factory-reset attempts -> 429"
+    else
+        _fail "6 rapid wrong-password factory-reset attempts -> $LAST_FR_SC (expected 429)"
+    fi
 else
     _warn "Admin endpoint CSRF checks skipped (login failed)"
+fi
+
+# -----------------------------------------------------------------------
+# 5. Rate limiting (runs last among HTTP tests: trips the per-IP login
+# bucket, so it must not precede the factory-reset checks in 6b).
+# -----------------------------------------------------------------------
+
+_section "5. Rate limiting"
+
+# Acquire a CSRF token for login attempts (fresh jar)
+rm -f /tmp/houndarr_smoke_rl_cookies
+curl -s -c /tmp/houndarr_smoke_rl_cookies -b /tmp/houndarr_smoke_rl_cookies \
+    -o /dev/null "$HOST/login" >/dev/null 2>&1 || true
+RL_CSRF=$(grep "houndarr_csrf" /tmp/houndarr_smoke_rl_cookies 2>/dev/null | awk '{print $NF}' || true)
+
+LAST_SC="000"
+for i in $(seq 1 7); do
+    LAST_SC=$(curl -s -X POST -o /dev/null -w "%{http_code}" \
+        --max-redirs 0 \
+        -c /tmp/houndarr_smoke_rl_cookies \
+        -b /tmp/houndarr_smoke_rl_cookies \
+        -H "X-CSRF-Token: ${RL_CSRF}" \
+        -d "username=${USERNAME}&password=wrong_password_smoke_test" \
+        "$HOST/login" || true)
+done
+
+if [[ "$LAST_SC" == "429" ]]; then
+    _pass "7 rapid failed logins -> 429 (rate limit triggered)"
+else
+    _fail "7 rapid failed logins -> $LAST_SC (expected 429)"
 fi
 
 # -----------------------------------------------------------------------
