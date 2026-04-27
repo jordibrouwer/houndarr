@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
 
 from houndarr import __version__
 from houndarr.auth import (
@@ -22,21 +21,10 @@ from houndarr.auth import (
 )
 from houndarr.database import set_setting
 from houndarr.routes._htmx import is_hx_request
+from houndarr.routes._templates import get_templates
 from houndarr.services.instances import list_instances
 
 router = APIRouter()
-
-# Templates are resolved relative to this file at runtime
-_templates: Jinja2Templates | None = None
-
-
-def get_templates() -> Jinja2Templates:
-    global _templates  # noqa: PLW0603
-    if _templates is None:
-        from pathlib import Path
-
-        _templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "templates"))
-    return _templates
 
 
 def _render(
@@ -201,11 +189,15 @@ async def dashboard(request: Request) -> HTMLResponse:
 @router.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request) -> HTMLResponse:
     """Search log viewer page: initial render with no filters applied."""
-    from houndarr.routes.api.logs import _compute_load_more_limit, _query_logs, _summarize_rows
+    from houndarr.services.log_query import (
+        compute_load_more_limit,
+        query_logs,
+        summarize_rows,
+    )
 
     master_key: bytes = request.app.state.master_key
     instances = await list_instances(master_key=master_key)
-    rows = await _query_logs(
+    rows = await query_logs(
         instance_id=None,
         action=None,
         search_kind=None,
@@ -214,7 +206,7 @@ async def logs_page(request: Request) -> HTMLResponse:
         before=None,
         limit=50,
     )
-    summary = _summarize_rows(rows)
+    summary = summarize_rows(rows)
     template_name = "partials/pages/logs_content.html" if is_hx_request(request) else "logs.html"
     return _render(
         request,
@@ -223,7 +215,7 @@ async def logs_page(request: Request) -> HTMLResponse:
         rows=rows,
         summary=summary,
         limit=50,
-        load_more_limit=_compute_load_more_limit(50),
+        load_more_limit=compute_load_more_limit(50),
         selected_instance_id=None,
         selected_action=None,
         selected_search_kind=None,
