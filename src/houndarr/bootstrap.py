@@ -30,7 +30,8 @@ from typing import Literal, TypedDict, Unpack
 
 from houndarr.config import AppSettings, bootstrap_settings
 from houndarr.crypto import ensure_master_key
-from houndarr.database import init_db, set_db_path
+from houndarr.database import init_db_migrations, init_db_schema, set_db_path
+from houndarr.repositories.search_log import purge_old_logs
 
 
 class AppSettingsOverrides(TypedDict, total=False):
@@ -52,6 +53,7 @@ class AppSettingsOverrides(TypedDict, total=False):
     auth_mode: str
     auth_proxy_header: str
     update_check_repo: str
+    log_retention_days: int
 
 
 def bootstrap_non_web(
@@ -69,7 +71,8 @@ def bootstrap_non_web(
         **overrides: Additional :class:`AppSettings` field values (``host``,
             ``port``, ``dev``, ``log_level``, ``secure_cookies``,
             ``cookie_samesite``, ``trusted_proxies``, ``auth_mode``,
-            ``auth_proxy_header``, ``update_check_repo``). When any
+            ``auth_proxy_header``, ``update_check_repo``,
+            ``log_retention_days``). When any
             override is supplied, :class:`AppSettings` is constructed
             directly and pinned into the runtime singleton so the whole
             process agrees on the overridden values. When no overrides
@@ -118,6 +121,21 @@ def bootstrap_non_web(
     master_key = ensure_master_key(settings.data_dir)
 
     set_db_path(str(settings.db_path))
-    asyncio.run(init_db())
+
+    async def _bootstrap_db() -> None:
+        # Mirror the lifespan order so the v14 cooldown back-fill runs
+        # against the post-retention search_log on the very first boot
+        # under ``python -m houndarr`` instead of the full unpruned
+        # table.  Without this split the lifespan's later purge sees a
+        # DB whose migrations already ran; the new index still keeps
+        # v14 fast on its own, but the symmetry with the lifespan means
+        # the docstring's "trim before migrate" guarantee actually
+        # holds for the CLI entry point too (issue #586).
+        await init_db_schema()
+        if settings.log_retention_days > 0:
+            await purge_old_logs(settings.log_retention_days)
+        await init_db_migrations()
+
+    asyncio.run(_bootstrap_db())
 
     return settings, settings.db_path, master_key
